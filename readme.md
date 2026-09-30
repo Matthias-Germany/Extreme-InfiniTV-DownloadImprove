@@ -169,7 +169,7 @@ After dragging the app from the `.dmg` into `/Applications`, try opening it once
 4. Click **Open Anyway** next to the message about Extreme InfiniTV being blocked.
 5. Confirm with your Mac login password if prompted, then click **Open** in the warning dialog.
 
-The **Open Anyway** option appears after you try to open the app and macOS saves the app as an exception after you approve it. url⟂Apple's Gatekeeper instructions⟂https://support.apple.com/en-gb/102445
+**Open Anyway** only shows up after a launch attempt, and macOS remembers the exception once approved. See [Apple's Gatekeeper instructions](https://support.apple.com/102445).
 
 #### Terminal alternative
 
