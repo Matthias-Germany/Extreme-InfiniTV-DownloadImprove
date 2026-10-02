@@ -2479,7 +2479,7 @@ function giveUpOnPlayback(ctx) {
   const failure = classifyStartFailure({
     videoCodec: info.videoCodec,
     audioCodec: info.audioCodec,
-    errorDetail: info.errorDetail,
+    errorDetail: info.errorDetail || vjs?.error?.()?.message || null,
     nameHint: hasHevcNameHint(ctx.name),
     deviceHevc: deviceSupportsHevc(),
     audioClockWedge: !!ctx.audioClockWedge,
@@ -4048,7 +4048,9 @@ function showPlaybackFailurePanel(ctx, opts = {}) {
           videoCodec: info.videoCodec,
           audioCodec: info.audioCodec,
           errorDetail:
-            info.errorDetail || (opts.decodeFailure ? "videoDecodeFailure" : null),
+            info.errorDetail ||
+            vjs?.error?.()?.message ||
+            (opts.decodeFailure ? "videoDecodeFailure" : null),
           nameHint: hasHevcNameHint(ctx.name),
           deviceHevc: deviceSupportsHevc(),
           audioClockWedge: !!ctx.audioClockWedge,
@@ -4145,8 +4147,8 @@ function showPlaybackFailurePanel(ctx, opts = {}) {
   const externalAvailable = externalPlayersAvailable || androidExternalAvailable
   let primaryKind = "retry"
   if (hevcInstall) primaryKind = "hevc"
-  else if (mpvFixEligible) primaryKind = "mpvFix"
   else if (audioProxyEligible) primaryKind = "audioFix"
+  else if (mpvFixEligible) primaryKind = "mpvFix"
   else if (builtinCantDecode && externalAvailable) primaryKind = "external"
 
   const primaryClass =

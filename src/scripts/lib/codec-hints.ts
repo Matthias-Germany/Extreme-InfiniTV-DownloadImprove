@@ -128,6 +128,8 @@ export function videoCodecDecodable(codec: string | null | undefined): boolean {
 const CODEC_ERROR_DETAIL_RX =
   /codec|decode|format.?unsupported|incompatible|drm|decrypt|eme|clearkey|license/i
 
+const VIDEO_DECODE_ERROR_RX = /PIPELINE_ERROR_DECODE[\s\S]*video|video packet|video.?decoder/i
+
 // Chromium/WebView2 reports a rejected second addSourceBuffer() as a "limit of SourceBuffer objects" error, not a codec error.
 const AUDIO_BUFFER_ERROR_RX = /addsourcebuffer|limit of sourcebuffer/i
 
@@ -160,6 +162,10 @@ export function classifyStartFailure(input: {
   const audioBufferError = AUDIO_BUFFER_ERROR_RX.test(errorDetail)
   const audioUnsupported = isUnsupportedAudioCodec(input.audioCodec)
   const videoIsHevc = !!videoCodec && isHevcCodecString(videoCodec)
+
+  if (!videoIsHevc && VIDEO_DECODE_ERROR_RX.test(errorDetail)) {
+    return { kind: "codec", codec: videoCodec }
+  }
 
   // A known-decodable video track shifts blame to the audio track instead.
   const videoPlayable = videoIsHevc ? input.deviceHevc : videoCodecDecodable(videoCodec)

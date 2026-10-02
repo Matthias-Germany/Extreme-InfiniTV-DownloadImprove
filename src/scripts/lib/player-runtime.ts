@@ -1561,9 +1561,25 @@ function attachHlsToVideo(
     if (!codecState.errorDetail && data?.details) {
       // hls.js keeps the response code out of `details`; callers need it to spot a provider refusal.
       const status = data?.response?.code
-      codecState.errorDetail = status ? `${data.details} (HTTP ${status})` : String(data.details)
+      codecState.errorDetail = typeof status === "number" && status >= 400
+        ? `HTTP_STATUS:${status}:${data.details}`
+        : status ? `${data.details} (HTTP ${status})` : String(data.details)
     }
     const ErrorTypes = Hls.ErrorTypes
+    const ErrorDetails = Hls.ErrorDetails
+    // startLoad() is a no-op before any level loaded, so retrying a manifest failure never errors again.
+    const manifestFatal =
+      data.details === ErrorDetails.MANIFEST_LOAD_ERROR ||
+      data.details === ErrorDetails.MANIFEST_LOAD_TIMEOUT ||
+      data.details === ErrorDetails.MANIFEST_PARSING_ERROR ||
+      data.details === ErrorDetails.MANIFEST_INCOMPATIBLE_CODECS_ERROR
+    if (manifestFatal) {
+      try { hls.destroy() } catch {}
+      if (active.get() === hls) active.set(null)
+      telemetry?.emit("fatal", String(data.details))
+      onGiveUp()
+      return
+    }
     if (data.type === ErrorTypes.NETWORK_ERROR && netRecover < 2) {
       netRecover++
       telemetry?.emit("recover", `network: ${data?.details || "error"}`)
@@ -3467,13 +3483,13 @@ export function canSwapToMpvEmbedded(
   return mpvAvailable && !isNativeVideoBackend(backend) && !isExternalBackend(backend as PlayerBackend)
 }
 
-/** hevc/codec verdicts are exactly what mpv's native decoder answers that MSE can't. */
+/** hevc/codec/audio verdicts are exactly what mpv's native decoder answers that MSE can't. */
 export function shouldOfferMpvEmbeddedFix(
   failureKind: StartFailureKind | string | null | undefined,
   backend: PlayerBackend | string | null | undefined,
   mpvAvailable: boolean
 ): boolean {
-  if (failureKind !== "hevc" && failureKind !== "codec") return false
+  if (failureKind !== "hevc" && failureKind !== "codec" && failureKind !== "audio") return false
   return canSwapToMpvEmbedded(backend, mpvAvailable)
 }
 

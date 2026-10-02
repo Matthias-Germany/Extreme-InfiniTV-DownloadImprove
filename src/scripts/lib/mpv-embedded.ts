@@ -1003,15 +1003,6 @@ export async function createMpvEmbeddedHandle(
     if (event.payload) handleMpvSurface(event.payload)
   })
 
-  try {
-    const status = (await invoke("mpv_embed_status")) as MpvEmbedStatusSurface
-    const seededState = shouldSeedSurfaceState(status, sessionId)
-    // The first surface report can fire before this listener exists.
-    if (seededState) handleMpvSurface({ sessionId, state: seededState, bounds: null, pip: null })
-  } catch (err) {
-    log.warn("[xt:mpv-embed] mpv_embed_status seed failed:", err)
-  }
-
   // See native-video-hole-contract.md: the webview must cut a transparent hole for the video below it.
   // Owner stamp: a stale handle's dispose() can't clear a hole it no longer owns.
   // Vars are owner-relative, so a scroll of an ancestor above the owner never moves the hole.
@@ -1196,6 +1187,15 @@ export async function createMpvEmbeddedHandle(
         pushBounds()
       }, delay),
     )
+  }
+
+  try {
+    const status = (await invoke("mpv_embed_status")) as MpvEmbedStatusSurface
+    const seededState = shouldSeedSurfaceState(status, sessionId)
+    // The first surface report can fire before this listener exists.
+    if (seededState) handleMpvSurface({ sessionId, state: seededState, bounds: null, pip: null })
+  } catch (err) {
+    log.warn("[xt:mpv-embed] mpv_embed_status seed failed:", err)
   }
 
   // Fullscreen resizes the container without a scroll or resize event on it.

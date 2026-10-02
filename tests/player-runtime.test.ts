@@ -453,15 +453,15 @@ describe("shouldOfferMpvEmbeddedFix", () => {
   })
 
   it("is false when the verdict is not codec-shaped", () => {
-    expect(shouldOfferMpvEmbeddedFix("audio", "videojs", true)).toBe(false)
     expect(shouldOfferMpvEmbeddedFix("parse", "videojs", true)).toBe(false)
     expect(shouldOfferMpvEmbeddedFix("connection-limit", "videojs", true)).toBe(false)
     expect(shouldOfferMpvEmbeddedFix("unknown", "videojs", true)).toBe(false)
   })
 
-  it("is true for hevc/codec verdicts when mpv is available and not already active", () => {
+  it("is true for hevc/codec/audio verdicts when mpv is available and not already active", () => {
     expect(shouldOfferMpvEmbeddedFix("hevc", "videojs", true)).toBe(true)
     expect(shouldOfferMpvEmbeddedFix("codec", "shaka", true)).toBe(true)
+    expect(shouldOfferMpvEmbeddedFix("audio", "videojs", true)).toBe(true)
   })
 })
 
