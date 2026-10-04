@@ -445,6 +445,16 @@ jobs:
           cp "$AAB" "$OUT/mobile-release.aab"
           echo "aab=$OUT/mobile-release.aab" >> "$GITHUB_OUTPUT"
 
+      # Kept for manual Play Console uploads when the Play publish step is rejected.
+      - name: Upload mobile AAB workflow artifact
+        if: env.HAS_PLAY_SECRET == 'true'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: mobile-aab
+          path: ${{ steps.locate-aab.outputs.aab }}
+          if-no-files-found: error
+          retention-days: 14
+
       # Same build with leanback required + its own versionCode slot.
       - name: Set TV beta versionCode
         if: env.HAS_PLAY_SECRET == 'true'
