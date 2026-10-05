@@ -311,6 +311,18 @@ jobs:
 
       - run: pnpm sync-version ${{ needs.create-beta-release.outputs.version }}
 
+      - name: Seed world-executable AppRun for the AppImage bundler
+        if: startsWith(matrix.os, 'ubuntu')
+        shell: bash
+        run: |
+          set -euo pipefail
+          ARCH="$(uname -m)"
+          CACHE_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/tauri"
+          mkdir -p "$CACHE_DIR"
+          curl -fsSL --retry 3 -o "$CACHE_DIR/AppRun-$ARCH" \
+            "https://github.com/tauri-apps/binary-releases/releases/download/apprun-old/AppRun-$ARCH"
+          chmod 755 "$CACHE_DIR/AppRun-$ARCH"
+
       - uses: tauri-apps/tauri-action@84b9d35b5fc46c1e45415bdb6144030364f7ebc5 # v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
