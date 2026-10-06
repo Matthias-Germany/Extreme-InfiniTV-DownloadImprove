@@ -10,6 +10,7 @@ import {
   MAX_OVERRIDE_NAME_LENGTH,
 } from "@/scripts/lib/channel-overrides.ts"
 import { log } from "@/scripts/lib/log.js"
+import { isSafeObjectKey } from "@/scripts/lib/safe-object-key.ts"
 
 const isTauri =
   typeof window !== "undefined" &&
@@ -984,6 +985,7 @@ export function setProgress(playlistId, kind, id, position, duration, extras) {
     updatedAt: Date.now(),
     completed,
   }
+  if (!isSafeObjectKey(String(id))) return
   bucket[String(id)] = next
   trimBucket(bucket)
   progressRevision++
@@ -1022,6 +1024,7 @@ export function markCompleted(playlistId, kind, id, extras) {
   const bucket = e[progKey(kind)]
   const prev = bucket[String(id)]
   if (prev?.completed && !extras) return
+  if (!isSafeObjectKey(String(id))) return
   const next = {
     ...(prev || {}),
     ...(extras || {}),

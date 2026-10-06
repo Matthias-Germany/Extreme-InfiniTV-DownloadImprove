@@ -57,3 +57,11 @@ export function isCacheableImageUrl(url: string): boolean {
   if (hostname === "asset.localhost" || hostname.endsWith(".localhost")) return false
   return true
 }
+
+export function isSafeImageUrl(url: string): boolean {
+  const trimmed = String(url).trim()
+  if (!/^[a-z][a-z0-9+.-]*:/i.test(trimmed)) return true
+  const scheme = trimmed.slice(0, trimmed.indexOf(":")).toLowerCase()
+  if (scheme === "data") return /^data:image\//i.test(trimmed)
+  return scheme === "http" || scheme === "https" || scheme === "blob" || scheme === "asset"
+}

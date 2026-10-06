@@ -114,6 +114,7 @@ import { getOffsetSetting, setOffsetSetting } from "@/scripts/lib/epg-data.js"
 import { setLocale, getActiveLocale } from "@/scripts/lib/i18n.js"
 import { listTvDevices, saveTvDevice } from "@/scripts/lib/tv-cast.js"
 import { log } from "@/scripts/lib/log.js"
+import { isSafeObjectKey } from "@/scripts/lib/safe-object-key.ts"
 
 const FORMAT_VERSION = 2
 const FORMAT_NAME = "extreme-infinitv-backup"
@@ -225,7 +226,7 @@ export async function exportAll() {
   const localContent = {}
   const epgOffsets = {}
   for (const entry of entries) {
-    if (!entry?._id) continue
+    if (!isSafeObjectKey(entry?._id)) continue
     if (entry.type === "local-m3u" || entry.type === "custom") {
       const text = await getLocalContent(entry._id, { waitForOpen: true })
       if (text === null) {

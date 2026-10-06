@@ -1428,6 +1428,7 @@ downloadBtn?.addEventListener("click", async () => {
     return
   }
   if (!isDownloadable()) {
+    if (!/^https?:\/\//i.test(detailSrc)) return
     window.open(detailSrc, "_blank", "noopener,noreferrer")
     if (downloadLabel) downloadLabel.textContent = t("detail.download.opened")
     return

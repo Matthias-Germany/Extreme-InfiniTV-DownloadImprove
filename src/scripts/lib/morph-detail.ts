@@ -1,8 +1,9 @@
 import { t } from "@/scripts/lib/i18n.js"
+import { isSafeImageUrl } from "@/scripts/lib/img-scale"
 
 export function setAmbient(ambientEl: HTMLElement | null, url: string | null): void {
     if (!ambientEl) return
-    if (url) {
+    if (url && isSafeImageUrl(url)) {
         const safe = String(url).replace(/\\/g, "\\\\").replace(/"/g, '\\"')
         ambientEl.style.backgroundImage = `url("${safe}")`
         ambientEl.setAttribute("data-ready", "true")
@@ -129,7 +130,7 @@ function paintHeroBackdrop(
 }
 
 function paintHeroPoster(heroEl: HTMLElement, name: string, posterUrl: string | null): void {
-    if (!posterUrl) {
+    if (!posterUrl || !isSafeImageUrl(posterUrl)) {
         paintHeroFallback(heroEl, name)
         return
     }

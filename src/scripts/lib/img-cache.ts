@@ -6,6 +6,7 @@ import {
   scaleToFit,
   imgCacheKey,
   isCacheableImageUrl,
+  isSafeImageUrl,
   imgKindMaxDim,
   type ImgKind,
 } from "@/scripts/lib/img-scale"
@@ -481,6 +482,7 @@ export function warmCachedImage(url: string, kind: ImgKind): void {
 
 /** Fetch (or serve cached) `url`, downscale to `kind`'s bucket, and mount it once visible. */
 export function mountCachedImage(img: HTMLImageElement, url: string, kind: ImgKind): void {
+  if (!isSafeImageUrl(url)) return
   if (!isCacheableImageUrl(url)) {
     img.src = url
     return
