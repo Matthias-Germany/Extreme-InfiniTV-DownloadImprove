@@ -318,3 +318,9 @@ export const ICON_ARROWS_MINIMIZE = wrap(
     '<path d="M19 15l-4 0l0 4" />' +
     '<path d="M15 15l6 6" />'
 )
+
+export const ICON_STACK_2 = wrap(
+  '<path d="M12 4l-8 4l8 4l8 -4l-8 -4" />' +
+    '<path d="M4 12l8 4l8 -4" />' +
+    '<path d="M4 16l8 4l8 -4" />'
+)

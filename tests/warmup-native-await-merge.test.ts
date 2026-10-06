@@ -48,6 +48,8 @@ vi.mock("@tauri-apps/api/core", () => ({
 vi.mock("@/scripts/lib/creds.js", () => ({
   isTauri: true,
   getEntries: async () => [{ _id: "pl-1", type: "xtream" }],
+  getEntryById: async () => ({ _id: "pl-1", type: "xtream" }),
+  getActiveEntry: async () => null,
   entryToCreds: () => ({ host: "http://provider.test", port: "", user: "user", pass: "pass" }),
   xtreamCandidatesFor: () => [{ host: "http://provider.test", port: "", user: "user", pass: "pass" }],
   getMirrorPin: () => 0,

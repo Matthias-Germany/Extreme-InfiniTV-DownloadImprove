@@ -60,7 +60,8 @@ function compareNames(first: SortableChannel, second: SortableChannel): number {
 export function sortChannelsForView<T extends SortableChannel>(
   list: T[],
   mode: ChannelSortMode | string,
-  scoreById?: Map<number, number> | null,
+  scoreById?: Map<number | string, number> | null,
+  keyOf: (channel: T) => number | string = (channel) => channel.id,
 ): T[] {
   if (mode === "number") {
     return list.slice().sort((first, second) => {
@@ -90,7 +91,7 @@ export function sortChannelsForView<T extends SortableChannel>(
       .slice()
       .sort(
         (first, second) =>
-          (scoreById.get(second.id) || 0) - (scoreById.get(first.id) || 0),
+          (scoreById.get(keyOf(second)) || 0) - (scoreById.get(keyOf(first)) || 0),
       )
   }
   return list

@@ -28,7 +28,7 @@ export async function ensureUserInfo(creds, playlistId, opts = {}) {
       USER_INFO_TTL_MS,
       () =>
         retryWithBackoff(async () => {
-          const response = await xtreamApiFetch("", {}, { dns })
+          const response = await xtreamApiFetch("", {}, { entryId: playlistId, dns })
           if (!response.ok) {
             throw new HttpRetryError(
               response.status,

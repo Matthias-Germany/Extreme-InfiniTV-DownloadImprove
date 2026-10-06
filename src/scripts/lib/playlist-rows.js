@@ -1,4 +1,4 @@
-import { selectEntry, removeEntry, loadCreds, getActiveEntry } from "./creds.js"
+import { selectEntry, removeEntry, loadCreds, getActiveEntry, setEntryMergedVisible } from "./creds.js"
 import { getNewestCacheTime } from "./cache.js"
 import { readCachedLiveChannels } from "./live-catalog.ts"
 import { buildLiveStreamUrl } from "./stream-urls.ts"
@@ -8,6 +8,7 @@ import {
   ICON_CHECK,
   ICON_INFO,
   ICON_DOWNLOAD,
+  ICON_STACK_2,
 } from "./icons.js"
 import { escapeHtml, fmtAge } from "./format.js"
 import { dnsShortLabel } from "./dns-test.ts"
@@ -103,6 +104,48 @@ function buildExportButton(entry, isCompact) {
   return btn
 }
 
+function buildMergedToggle(entry, isActive, isCompact) {
+  const isOn = isActive || !!entry.mergedVisible
+  const btn = document.createElement("button")
+  btn.type = "button"
+  btn.dataset.role = "merged-toggle"
+  btn.setAttribute("role", "switch")
+  btn.setAttribute("aria-checked", isOn ? "true" : "false")
+  const label = isActive ? t("playlist.mergedActiveAlways") : t("playlist.mergedToggle")
+  btn.title = label
+  btn.setAttribute(
+    "aria-label",
+    isActive ? label : t("playlist.mergedToggleAria", { title: entry.title })
+  )
+  const toneClass = isOn
+    ? "text-accent bg-accent-soft"
+    : "text-fg-3 hover:text-fg hover:bg-surface focus:text-fg focus:bg-surface"
+  btn.className = isCompact
+    ? `inline-flex items-center justify-center rounded-lg border h-8 w-8 transition-colors outline-none focus-visible:border-accent ${
+        isOn ? "border-accent/40 text-accent bg-accent-soft" : "border-line bg-bg text-fg-2 hover:bg-surface-2 hover:text-fg"
+      }`
+    : `shrink-0 self-center rounded-md size-10 p-0 ${toneClass} inline-flex items-center justify-center transition-colors outline-none`
+  if (isActive) {
+    btn.disabled = true
+    btn.classList.add("opacity-60")
+  }
+  btn.innerHTML = `<span class="inline-flex ${isCompact ? "text-sm" : "text-base"}">${ICON_STACK_2}</span>`
+  btn.addEventListener("click", async (ev) => {
+    ev.stopPropagation()
+    if (btn.disabled) return
+    btn.disabled = true
+    const next = !entry.mergedVisible
+    try {
+      await setEntryMergedVisible(entry._id, next)
+      toastSuccess(t(next ? "playlist.toast.mergedOn" : "playlist.toast.mergedOff", { title: entry.title }))
+    } catch (e) {
+      log.error("[xt:playlist-rows] merged toggle failed:", e)
+    }
+    btn.disabled = false
+  })
+  return btn
+}
+
 /**
  * @param {{
  *   entry: any,
@@ -150,6 +193,8 @@ export function renderPlaylistRow({
     ? entry.sourceName || ""
     : entry.url || ""
 
+  const showMergedBadge = !!entry.mergedVisible && !isActive
+
   const badgeSize = isCompact
     ? "h-5 min-w-10 px-1.5"
     : "h-6 min-w-12 px-2 tracking-wide"
@@ -185,6 +230,11 @@ export function renderPlaylistRow({
         <span class="truncate text-sm flex-1 min-w-0 ${
           isActive ? "text-fg font-medium" : "text-fg-2"
         }">${escapeHtml(entry.title)}</span>
+        ${
+          showMergedBadge
+            ? `<span class="shrink-0 rounded-md ring-1 ring-accent/40 bg-accent-soft text-accent text-2xs px-1.5 leading-5">${escapeHtml(t("playlist.mergedBadge"))}</span>`
+            : ""
+        }
       </span>
       ${
         subtitle
@@ -255,6 +305,7 @@ export function renderPlaylistRow({
       document.documentElement.dataset.tvUi === "1"
     paintPlaylistHealthInto(panel, entry, {
       isCompact,
+      isActive,
       onAfterRemove,
     })
     if (isKeyboardActivation) {
@@ -268,6 +319,7 @@ export function renderPlaylistRow({
 
   if (!isCompact) {
     const exportBtn = buildExportButton(entry, false)
+    const mergedToggle = buildMergedToggle(entry, isActive, false)
 
     const del = document.createElement("button")
     del.type = "button"
@@ -293,7 +345,7 @@ export function renderPlaylistRow({
       if (onAfterRemove) await onAfterRemove()
     })
     if (editUnreachableOnTv(entry)) {
-      row.append(pick, info, exportBtn, del)
+      row.append(pick, mergedToggle, info, exportBtn, del)
     } else {
       const edit = document.createElement("a")
       edit.href = editHrefFor(entry)
@@ -302,7 +354,7 @@ export function renderPlaylistRow({
       edit.className =
         "shrink-0 self-center rounded-md size-10 p-0 text-fg-3 hover:text-fg hover:bg-surface focus:text-fg focus:bg-surface inline-flex items-center justify-center transition-colors outline-none"
       edit.innerHTML = `<span class="inline-flex text-base">${ICON_PENCIL}</span>`
-      row.append(pick, info, edit, exportBtn, del)
+      row.append(pick, mergedToggle, info, edit, exportBtn, del)
     }
   } else {
     row.append(pick, info)
@@ -371,10 +423,10 @@ function healthRow(label, value, tone, title) {
  *
  * @param {HTMLElement} panel
  * @param {any} entry
- * @param {{ isCompact?: boolean, onAfterRemove?: () => void | Promise<void> }} [opts]
+ * @param {{ isCompact?: boolean, isActive?: boolean, onAfterRemove?: () => void | Promise<void> }} [opts]
  */
 function paintPlaylistHealthInto(panel, entry, opts = {}) {
-  const { isCompact = false, onAfterRemove } = opts
+  const { isCompact = false, isActive = false, onAfterRemove } = opts
   // Remember the focused footer control so replaceChildren() does not drop focus to body.
   const focusedRole =
     document.activeElement instanceof HTMLElement &&
@@ -664,8 +716,9 @@ function paintPlaylistHealthInto(panel, entry, opts = {}) {
       if (onAfterRemove) await onAfterRemove()
     })
 
-    if (edit) actions.append(edit, exportBtn, del)
-    else actions.append(exportBtn, del)
+    const mergedToggle = buildMergedToggle(entry, isActive, true)
+    if (edit) actions.append(mergedToggle, edit, exportBtn, del)
+    else actions.append(mergedToggle, exportBtn, del)
     footer.appendChild(actions)
 
     if (editUnreachable) {

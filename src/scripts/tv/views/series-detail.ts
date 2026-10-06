@@ -2,7 +2,8 @@
 
 import { nextPaint, markLastOpenedEntry, type TvView, type TvViewContext } from "@/scripts/tv/router"
 import { t, LOCALE_EVENT, getActiveLocale } from "@/scripts/lib/i18n"
-import { getActiveEntry, loadCreds } from "@/scripts/lib/creds.js"
+import { getActiveEntry, getEntryById, entryToCreds } from "@/scripts/lib/creds.js"
+import { detailHrefFor, readDetailPlaylistParam } from "@/scripts/lib/detail-href.ts"
 import { getCached } from "@/scripts/lib/cache.js"
 import { ensureSeries } from "@/scripts/lib/catalog.js"
 import { requestSeriesInfo } from "@/scripts/lib/series-seasons.ts"
@@ -167,11 +168,12 @@ function categoryBucket(catalog: CatalogRow[], category: string): CatalogRow[] {
 const view: TvView = {
   prepaint(root: HTMLElement, url: URL): boolean {
     const seriesId = Number(url.searchParams.get("id") || "0")
-    if (!seriesId || !lastKnownPlaylistId) return false
-    const cachedCatalog = (getCached(lastKnownPlaylistId, "series")?.data || []) as CatalogRow[]
+    const prepaintPlaylistId = readDetailPlaylistParam(url.search) || lastKnownPlaylistId
+    if (!seriesId || !prepaintPlaylistId) return false
+    const cachedCatalog = (getCached(prepaintPlaylistId, "series")?.data || []) as CatalogRow[]
     const catalogRow = cachedCatalog.find((row) => Number(row.id) === seriesId)
     if (!catalogRow) return false
-    markLastOpenedEntry({ kind: "series", id: seriesId })
+    markLastOpenedEntry({ kind: "series", id: seriesId, playlistId: prepaintPlaylistId })
     const chrome = createDetailChrome(root)
     chrome.setSkeleton(false)
     chrome.setHero(stubHero(catalogRow))
@@ -179,6 +181,7 @@ const view: TvView = {
   },
   mount(root: HTMLElement, ctx: TvViewContext) {
     const seriesId = Number(ctx.url.searchParams.get("id") || "0")
+    const requestedPlaylistId = readDetailPlaylistParam(ctx.url.search)
     const deepLinkSeason = parseDeepLinkNumber(ctx.url.searchParams.get("season"))
     const deepLinkEpisode = parseDeepLinkNumber(ctx.url.searchParams.get("episode"))
 
@@ -748,7 +751,10 @@ const view: TvView = {
         kind: "series",
         id: row.id,
         name: row.name,
-        href: `/tv/series/detail?id=${encodeURIComponent(String(row.id))}`,
+        href: detailHrefFor("series", row.id, {
+          tv: true,
+          playlistId: requestedPlaylistId ? activePlaylistId : undefined,
+        }),
         posterUrl: row.logo,
         meta: formatCardMeta(row.year, row.rating),
         ariaLabel: t("tv.aria.open", { name: row.name }),
@@ -814,9 +820,7 @@ const view: TvView = {
         })
         return
       }
-      markLastOpenedEntry({ kind: "series", id: seriesId })
-
-      const active = await getActiveEntry()
+      const active = (requestedPlaylistId && (await getEntryById(requestedPlaylistId))) || (await getActiveEntry())
       if (destroyed) return
       if (!active) {
         chrome.setSkeleton(false)
@@ -833,8 +837,9 @@ const view: TvView = {
 
       activePlaylistId = active._id
       lastKnownPlaylistId = activePlaylistId
+      markLastOpenedEntry({ kind: "series", id: seriesId, playlistId: activePlaylistId })
       await ensurePrefsLoaded()
-      creds = await loadCreds()
+      creds = entryToCreds(active)
       if (destroyed) return
 
       const cachedCatalog = (getCached(activePlaylistId, "series")?.data || []) as CatalogRow[]

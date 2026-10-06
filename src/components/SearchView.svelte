@@ -1,7 +1,9 @@
 <script>
   // Full search experience. Mounted on /search and used as the search surface 
   import { onMount, tick } from "svelte"
-  import { getActiveEntry, loadCreds } from "@/scripts/lib/creds.js"
+  import { getActiveEntry, getMergedEntries, loadCreds } from "@/scripts/lib/creds.js"
+  import { detailHrefFor } from "@/scripts/lib/detail-href.ts"
+  import { rowKey } from "@/scripts/lib/merged-catalog-core.ts"
   import { normalize, parseSearchQuery, scoreNormMatch } from "@/scripts/lib/text.js"
   import { getCached, hydrate as hydrateCache } from "@/scripts/lib/cache.js"
   import {
@@ -129,25 +131,26 @@
     void locale
     const parts = ["Series"]
     if (item.year) parts.push(item.year)
-    const count = seasonCounts[item.id]
+    const count = seasonCounts[rowKey(item)]
     if (count) parts.push(seasonsLabel(count))
     if (item.genre) parts.push(item.genre)
     return parts.join(" · ")
   }
 
   function lazySeasons(node, item) {
-    if (!item || item.kind !== "series" || !activePlaylistId) return
-    observeSeasonCount(node, activePlaylistId, item.id, (count) => {
-      seasonCounts = { ...seasonCounts, [item.id]: count }
+    if (!item || item.kind !== "series" || !item.playlistId) return
+    observeSeasonCount(node, item.playlistId, item.id, (count) => {
+      seasonCounts = { ...seasonCounts, [rowKey(item)]: count }
     })
   }
   /** @type {HTMLInputElement|null} */
   let inputEl = null
 
-  function buildHref(kind, id) {
-    if (kind === "live") return `/livetv?channel=${encodeURIComponent(id)}`
-    if (kind === "vod") return `/movies/detail?id=${encodeURIComponent(id)}`
-    return `/series/detail?id=${encodeURIComponent(id)}`
+  function buildHref(kind, id, playlistId) {
+    if (kind === "live") {
+      return `/livetv?channel=${encodeURIComponent(id)}&pl=${encodeURIComponent(playlistId)}`
+    }
+    return detailHrefFor(kind, id, { playlistId })
   }
 
   function fmtProgrammeStart(start) {
@@ -167,7 +170,11 @@
 
   async function loadIndex(opts = {}) {
     const generation = ++loadIndexGeneration
-    const [active] = await Promise.all([getActiveEntry(), ensurePrefsLoaded()])
+    const [active, mergedEntries] = await Promise.all([
+      getActiveEntry(),
+      getMergedEntries(),
+      ensurePrefsLoaded(),
+    ])
     if (generation !== loadIndexGeneration) return
     if (!active) {
       allItems = []
@@ -176,20 +183,72 @@
       recentSearches = []
       return
     }
-    if (active._id !== activePlaylistId) seasonCounts = {}
     activePlaylistId = active._id
     refreshRecentSearches()
+    const playlistIds = mergedEntries.length ? mergedEntries.map((entry) => entry._id) : [active._id]
 
     const buildIndex = async () => {
-      const liveData = readCachedLiveChannels(active._id)
-      const vodData = getCached(active._id, "vod")?.data || []
-      const seriesData = getCached(active._id, "series")?.data || []
-      rawVodData = vodData
-      rawSeriesData = seriesData
+      const items = []
+      const liveByPlaylist = []
+      let activeCold = false
+      for (const playlistId of playlistIds) {
+        const liveData = readCachedLiveChannels(playlistId)
+        const vodData = getCached(playlistId, "vod")?.data || []
+        const seriesData = getCached(playlistId, "series")?.data || []
+        liveByPlaylist.push({ playlistId, liveData })
+        if (playlistId === active._id) {
+          rawVodData = vodData
+          rawSeriesData = seriesData
+          activeCold = !liveData.length && !vodData.length && !seriesData.length
+        }
 
-      const cold =
-        !liveData.length && !vodData.length && !seriesData.length
-      if (cold && opts.warm !== false) {
+        for (const channel of liveData) {
+          if (channel.isHeader) continue
+          items.push({
+            kind: "live",
+            playlistId,
+            id: Number(channel.id),
+            name: channel.name || "",
+            logo: channel.logo || null,
+            subtitle: `${fmtChannelIdentity(channel.chno, channel.id)} · ${channel.category || "Live"}`,
+            href: buildHref("live", channel.id, playlistId),
+            norm: channel.norm || normalize(channel.name || ""),
+          })
+        }
+        for (const movie of vodData) {
+          items.push({
+            kind: "vod",
+            playlistId,
+            id: Number(movie.id),
+            name: movie.name || "",
+            logo: movie.logo || null,
+            rating: movie.rating || "",
+            year: movie.year || "",
+            category: movie.category || "",
+            subtitle: movie.year ? `Movie · ${movie.year}` : "Movie",
+            href: buildHref("vod", movie.id, playlistId),
+            norm: movie.norm || normalize(`${movie.name || ""} ${movie.category || ""}`),
+          })
+        }
+        for (const series of seriesData) {
+          items.push({
+            kind: "series",
+            playlistId,
+            id: Number(series.id),
+            name: series.name || "",
+            logo: series.logo || null,
+            rating: series.rating || "",
+            year: series.year || "",
+            category: series.category || "",
+            genre: series.category || "",
+            subtitle: series.year ? `Series · ${series.year}` : "Series",
+            href: buildHref("series", series.id, playlistId),
+            norm: series.norm || normalize(`${series.name || ""} ${series.category || ""}`),
+          })
+        }
+      }
+
+      if (activeCold && opts.warm !== false) {
         isWarming = true
         warmupActive(active._id).then(() => {
           isWarming = false
@@ -197,64 +256,23 @@
         })
       }
 
-      const items = []
-      for (const channel of liveData) {
-        if (channel.isHeader) continue
-        items.push({
-          kind: "live",
-          id: Number(channel.id),
-          name: channel.name || "",
-          logo: channel.logo || null,
-          subtitle: `${fmtChannelIdentity(channel.chno, channel.id)} · ${channel.category || "Live"}`,
-          href: buildHref("live", channel.id),
-          norm: channel.norm || normalize(channel.name || ""),
-        })
-      }
-      for (const movie of vodData) {
-        items.push({
-          kind: "vod",
-          id: Number(movie.id),
-          name: movie.name || "",
-          logo: movie.logo || null,
-          rating: movie.rating || "",
-          year: movie.year || "",
-          category: movie.category || "",
-          subtitle: movie.year ? `Movie · ${movie.year}` : "Movie",
-          href: buildHref("vod", movie.id),
-          norm: movie.norm || normalize(`${movie.name || ""} ${movie.category || ""}`),
-        })
-      }
-      for (const series of seriesData) {
-        items.push({
-          kind: "series",
-          id: Number(series.id),
-          name: series.name || "",
-          logo: series.logo || null,
-          rating: series.rating || "",
-          year: series.year || "",
-          category: series.category || "",
-          genre: series.category || "",
-          subtitle: series.year ? `Series · ${series.year}` : "Series",
-          href: buildHref("series", series.id),
-          norm: series.norm || normalize(`${series.name || ""} ${series.category || ""}`),
-        })
-      }
-
-      const epgState = getProgrammesSync(active._id)
-      const hasTvgChannels = liveData.some((channel) => channel.tvgId)
-      if (hasTvgChannels && !epgState && opts.warmEpg !== false) {
+      const activeLive = liveByPlaylist.find((entry) => entry.playlistId === active._id)?.liveData || []
+      const hasTvgChannels = activeLive.some((channel) => channel.tvgId)
+      if (hasTvgChannels && !getProgrammesSync(active._id) && opts.warmEpg !== false) {
         try {
           const creds = await loadCreds()
           if (generation !== loadIndexGeneration) return
           if (creds?.host) loadProgrammes(active._id, creds).catch(() => {})
         } catch {}
       }
-      if (epgState?.programmes?.size) {
-        const now = Date.now()
-        const HORIZON = now + 36 * 60 * 60 * 1000
-        const HARD_CAP = 5000
-        let epgCount = 0
-        outer: for (const channel of liveData) {
+      const now = Date.now()
+      const HORIZON = now + 36 * 60 * 60 * 1000
+      const HARD_CAP = 5000
+      let epgCount = 0
+      outer: for (const { playlistId, liveData } of liveByPlaylist) {
+        const epgState = getProgrammesSync(playlistId)
+        if (!epgState?.programmes?.size) continue
+        for (const channel of liveData) {
           if (!channel.tvgId) continue
           const programmes = epgState.programmes.get(
             String(channel.tvgId).toLowerCase()
@@ -269,11 +287,12 @@
             const when = isLive ? "Live now" : fmtProgrammeStart(programme.start)
             items.push({
               kind: "epg",
+              playlistId,
               id: `${channel.id}:${programme.start}`,
               name: programme.title || "Untitled",
               logo: channelLogo,
               subtitle: `${channelName} · ${when}`,
-              href: buildHref("live", channel.id),
+              href: buildHref("live", channel.id, playlistId),
               norm: normalize(`${programme.title || ""} ${channelName}`),
             })
             epgCount++
@@ -285,16 +304,18 @@
       allItems = items
     }
 
-    const hydrations = [
-      hydrateCache(active._id, "live"),
-      hydrateCache(active._id, "m3u"),
-      hydrateCache(active._id, "vod"),
-      hydrateCache(active._id, "series"),
-    ]
-    const allCached =
-      hasCachedLiveChannels(active._id) &&
-      !!getCached(active._id, "vod") &&
-      !!getCached(active._id, "series")
+    const hydrations = []
+    for (const playlistId of playlistIds) {
+      for (const cacheKind of ["live", "m3u", "vod", "series"]) {
+        hydrations.push(hydrateCache(playlistId, cacheKind))
+      }
+    }
+    const allCached = playlistIds.every(
+      (playlistId) =>
+        hasCachedLiveChannels(playlistId) &&
+        !!getCached(playlistId, "vod") &&
+        !!getCached(playlistId, "series"),
+    )
 
     if (allCached) {
       // Build from memory now; hydration below only refreshes stale data.
@@ -414,6 +435,7 @@
     const activeKind = kindFilter === "vod" || kindFilter === "series" ? kindFilter : "all"
     const out = []
     for (const item of allItems) {
+      if (item.playlistId !== activePlaylistId) continue
       if (item.kind === "vod") {
         if (!personTitleIds.vod.has(item.id)) continue
       } else if (item.kind === "series") {
@@ -521,7 +543,7 @@
     node.addEventListener("focusin", activate)
     node.addEventListener("click", commitSearch)
     function render(next) {
-      const nextKey = `${next.playlistId}|${next.locale}|${next.result.kind}:${next.result.id}`
+      const nextKey = `${next.result.playlistId}|${next.locale}|${next.result.kind}:${next.result.id}`
       if (card && nextKey === key) {
         const meta = card.querySelector('[data-role="meta"]')
         if (meta) meta.textContent = cardMeta(next.result)
@@ -533,7 +555,7 @@
         entry: next.result,
         idx: next.idx,
         kind: next.result.kind,
-        activePlaylistId: next.playlistId,
+        playlistId: next.result.playlistId,
         detailHref: (entry) => entry.href,
         fallbackTitle: (entry) => entry.name || String(entry.id),
         metaText: (entry) => cardMeta(entry),
@@ -697,6 +719,7 @@
     }
     const onLocale = () => { locale++ }
     const onSearchView = () => { viewMode = getSearchView() }
+    const onMergedChanged = () => loadIndex({ warm: false })
     const onActiveChanged = () =>
       loadIndex().then(() => {
         if (personMode) resolvePersonMode()
@@ -707,6 +730,7 @@
     document.addEventListener("xt:catalog-warmed", onWarmed)
     document.addEventListener(EPG_LOADED_EVENT, onEpgLoaded)
     document.addEventListener("xt:active-changed", onActiveChanged)
+    document.addEventListener("xt:merged-changed", onMergedChanged)
     document.addEventListener(LOCALE_EVENT, onLocale)
     document.addEventListener(SEARCH_VIEW_EVENT, onSearchView)
     document.addEventListener(EVT_SEARCH_RECENT_CHANGED, onSearchRecentChanged)
@@ -721,6 +745,7 @@
       document.removeEventListener("xt:catalog-warmed", onWarmed)
       document.removeEventListener(EPG_LOADED_EVENT, onEpgLoaded)
       document.removeEventListener("xt:active-changed", onActiveChanged)
+      document.removeEventListener("xt:merged-changed", onMergedChanged)
       document.removeEventListener(LOCALE_EVENT, onLocale)
       document.removeEventListener(SEARCH_VIEW_EVENT, onSearchView)
       document.removeEventListener(EVT_SEARCH_RECENT_CHANGED, onSearchRecentChanged)
@@ -1019,7 +1044,7 @@
         {#each resultRuns as run (run.layout + ":" + run.entries[0].idx)}
           {#if run.layout === "rows"}
             <ul class="flex flex-col gap-1">
-              {#each run.entries as entry (entry.result.kind + ":" + entry.result.id)}
+              {#each run.entries as entry (entry.result.playlistId + ":" + entry.result.kind + ":" + entry.result.id)}
                 {#if !personMode && entry.result.kind === "person" && entry.idx === 0}
                   <li class="px-2.5 pt-1 pb-1.5">
                     <span class="text-eyebrow font-medium uppercase tracking-wide text-fg-3">{tr("search.actors")}</span>
@@ -1073,7 +1098,7 @@
             </ul>
           {:else}
             <ul data-result-grid="1" class={GRID_CLASS}>
-              {#each run.entries as entry (entry.result.kind + ":" + entry.result.id)}
+              {#each run.entries as entry (entry.result.playlistId + ":" + entry.result.kind + ":" + entry.result.id)}
                 <li
                   data-result-index={entry.idx}
                   class="rounded-xl"
@@ -1084,14 +1109,13 @@
                     id: entry.result.id,
                     name: entry.result.name,
                     logo: entry.result.logo,
-                    playlistId: activePlaylistId,
+                    playlistId: entry.result.playlistId,
                   }}
                   use:searchCard={{
                     result: entry.result,
                     idx: entry.idx,
-                    playlistId: activePlaylistId,
                     locale,
-                    seasonCount: seasonCounts[entry.result.id],
+                    seasonCount: seasonCounts[rowKey(entry.result)],
                   }}></li>
               {/each}
             </ul>

@@ -12,7 +12,7 @@ import { initPlaylistAccent } from "@/scripts/lib/playlist-accent"
 import { registerMainFocusSection, NAV_SECTION_ID } from "@/scripts/tv/focus"
 import { isElementVisibleForNav } from "@/scripts/lib/nav-visibility"
 import { mountTvFocusGlide } from "@/scripts/tv/focus-glide"
-import { getEntries, getActiveEntry } from "@/scripts/lib/creds.js"
+import { getEntries, getActiveEntry, getMergedEntries } from "@/scripts/lib/creds.js"
 import { getPlaylistListEmptyCopy } from "@/scripts/lib/playlist-rows.js"
 import { renderTvPlaylistRow } from "@/scripts/tv/ui/playlist-row"
 import { createActionSheet, type ActionSheetHandle } from "@/scripts/tv/ui/action-sheet"
@@ -47,7 +47,10 @@ async function refreshPlaylistNavLabel(): Promise<void> {
   if (!markEl || !titleEl) return
   const active = await getActiveEntry()
   markEl.textContent = active?.emoji || (active?.title || "?").charAt(0).toUpperCase()
-  titleEl.textContent = active?.title || t("tv.nav.playlist")
+  const mergedCount = (await getMergedEntries()).length
+  titleEl.textContent =
+    (active?.title || t("tv.nav.playlist")) +
+    (mergedCount > 1 ? t("tv.nav.mergedSuffix", { count: mergedCount - 1 }) : "")
 }
 
 let playlistDialogEl: HTMLDialogElement | null = null
@@ -163,6 +166,7 @@ function mountNavPlaylistDialog(): void {
   void refreshPlaylistNavLabel()
   document.addEventListener("xt:active-changed", () => void refreshPlaylistNavLabel())
   document.addEventListener("xt:entries-updated", () => void refreshPlaylistNavLabel())
+  document.addEventListener("xt:merged-changed", () => void refreshPlaylistNavLabel())
 }
 
 function isNavigableElement(elem: Element): boolean {
@@ -266,15 +270,14 @@ function scheduleBackgroundWarmup(): void {
     typeof window.requestIdleCallback === "function"
       ? window.requestIdleCallback(fn, { timeout: 2000 })
       : setTimeout(fn, 500)
-  idle(() => {
-    import("@/scripts/lib/creds.js")
-      .then(({ getActiveEntry }) => getActiveEntry())
-      .then((entry) => {
-        if (!entry?._id) return
-        return import("@/scripts/lib/catalog.js").then((mod) => mod.warmupActive(entry._id))
-      })
-      .catch(() => {})
-  })
+  const warm = () =>
+    idle(() => {
+      import("@/scripts/lib/catalog.js")
+        .then((mod) => mod.warmupMerged())
+        .catch(() => {})
+    })
+  warm()
+  document.addEventListener("xt:merged-changed", warm)
 }
 
 // A view's async mount can land after a Back press already moved `location`, so the key

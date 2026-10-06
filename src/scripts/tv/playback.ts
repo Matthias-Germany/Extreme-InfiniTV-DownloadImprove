@@ -26,7 +26,7 @@ import {
   resolveLiveChannelCastDescriptor,
   resolvePlaylistCreds,
 } from "@/scripts/lib/tv-cast-live.js"
-import { getActiveDnsOverrideAsync, getEntries, xtreamCandidatesFor } from "@/scripts/lib/creds.js"
+import { getPlaylistDnsOverride, getEntries, xtreamCandidatesFor } from "@/scripts/lib/creds.js"
 import { resolveCatchupCastDescriptor } from "@/scripts/lib/tv-cast-catchup.ts"
 import type { CatchupRequestChannel } from "@/scripts/lib/catchup-resolve.ts"
 import { buildMovieStreamUrl, buildSeriesStreamUrl, buildLiveStreamUrl } from "@/scripts/lib/stream-urls.ts"
@@ -82,6 +82,7 @@ export interface TvLiveChannel {
   tvgId?: string | null
   tvgShift?: number | null
   chno?: number | null
+  playlistId?: string
   /** Custom-playlist reference whose source channel could no longer be found. */
   unresolved?: true
 }
@@ -142,13 +143,22 @@ interface ActiveProgressTarget {
   writer: ThrottledProgressWriter
 }
 
+interface LiveSiblingInfo {
+  name: string
+  logo: string | null
+  playlistId: string
+  id: string | number
+  viewKey: string
+}
+
 interface ActiveLiveTarget {
   playlistId: string
   initialChannelId: string
   currentChannelId: string
-  siblingsById: Map<string, { name: string; logo: string | null }>
+  siblingsById: Map<string, LiveSiblingInfo>
   channels: TvLiveChannel[]
   channelInfo: OsdLiveChannel
+  groupKey: string | null
 }
 
 let playerDom: EmbeddedEngineDom | null = null
@@ -264,7 +274,12 @@ function commitZap(): void {
   }
   const events = currentEvents ?? {}
   void playLive(
-    { playlistId: activeLiveTarget.playlistId, channel: resolved, siblings: activeLiveTarget.channels },
+    {
+      playlistId: resolved.playlistId ?? activeLiveTarget.playlistId,
+      channel: resolved,
+      siblings: activeLiveTarget.channels,
+      groupKey: activeLiveTarget.groupKey,
+    },
     events
   )
 }
@@ -702,14 +717,30 @@ function handleLiveChannelChanged(channelId: string, channelName: string): void 
   if (!activeLiveTarget) return
   activeLiveTarget.currentChannelId = channelId
   const sibling = activeLiveTarget.siblingsById.get(channelId)
-  pushRecent(activeLiveTarget.playlistId, "live", Number(channelId), channelName || sibling?.name || "", sibling?.logo ?? null)
-  currentEvents?.onLiveChannelChanged?.(channelId, channelName)
+  if (sibling) {
+    activeLiveTarget.playlistId = sibling.playlistId
+    activeLiveTarget.channelInfo = {
+      ...activeLiveTarget.channelInfo,
+      id: sibling.id,
+      name: channelName || sibling.name,
+      logo: sibling.logo,
+    }
+  }
+  pushRecent(
+    sibling?.playlistId ?? activeLiveTarget.playlistId,
+    "live",
+    Number(sibling?.id ?? channelId),
+    channelName || sibling?.name || "",
+    sibling?.logo ?? null
+  )
+  currentEvents?.onLiveChannelChanged?.(sibling?.viewKey ?? channelId, channelName)
 }
 
 function handleFinished(finalChannelId: string | null): void {
   if (!activeLiveTarget || !finalChannelId) return
   if (finalChannelId !== activeLiveTarget.initialChannelId) {
-    currentEvents?.onLiveChannelChanged?.(finalChannelId, "")
+    const finalSibling = activeLiveTarget.siblingsById.get(finalChannelId)
+    currentEvents?.onLiveChannelChanged?.(finalSibling?.viewKey ?? finalChannelId, "")
   }
 }
 
@@ -1050,10 +1081,16 @@ function buildSiblingBackupUrls(
   return urls
 }
 
+interface PlaylistLiveCreds {
+  creds: any | null
+  backupCreds: any[]
+}
+
 async function resolveSiblingChannel(
   channel: TvLiveChannel,
   creds: any | null,
-  backupCreds: any[]
+  backupCreds: any[],
+  outputId: string | number = channel.id
 ): Promise<SiblingChannelInput> {
   let streamUrl: string | null = null
   try {
@@ -1063,7 +1100,7 @@ async function resolveSiblingChannel(
   }
   const backupUrls = buildSiblingBackupUrls(channel, backupCreds, streamUrl, creds)
   return {
-    id: channel.id,
+    id: outputId,
     name: channel.name || "",
     logo: channel.logo ?? null,
     streamUrl,
@@ -1085,8 +1122,31 @@ interface SiblingResolutionCacheEntry {
 }
 const siblingResolutionCache = new Map<string, SiblingResolutionCacheEntry>()
 
-function siblingResolutionCacheKey(playlistId: string, groupKey: string | null | undefined): string {
-  return `${playlistId}::${groupKey ?? ""}`
+function siblingResolutionCacheKey(
+  playlistId: string,
+  groupKey: string | null | undefined,
+  mergedIds: string
+): string {
+  return `${playlistId}::${groupKey ?? ""}::${mergedIds}`
+}
+
+function siblingPlaylistId(sibling: TvLiveChannel, fallbackPlaylistId: string): string {
+  return sibling.playlistId ?? fallbackPlaylistId
+}
+
+function needsCompositeIds(siblings: TvLiveChannel[], playlistId: string): boolean {
+  const seenIds = new Set<string>()
+  for (const sibling of siblings) {
+    if (siblingPlaylistId(sibling, playlistId) !== playlistId) return true
+    const id = String(sibling.id)
+    if (seenIds.has(id)) return true
+    seenIds.add(id)
+  }
+  return false
+}
+
+function liveRowKey(sibling: TvLiveChannel, playlistId: string): string {
+  return `${siblingPlaylistId(sibling, playlistId)}:${sibling.id}`
 }
 
 if (typeof document !== "undefined") {
@@ -1127,24 +1187,41 @@ export async function playLive(input: TvPlayLiveInput, events: TvPlaybackEvents 
       input.channel.logo || resolved.channel?.logo || null
     )
 
-    const cacheKey = siblingResolutionCacheKey(input.playlistId, input.groupKey)
+    const composite = needsCompositeIds(input.siblings, input.playlistId)
+    const distinctPlaylistIds = [
+      ...new Set(input.siblings.map((sibling) => siblingPlaylistId(sibling, input.playlistId))),
+    ]
+    const cacheKey = siblingResolutionCacheKey(input.playlistId, input.groupKey, distinctPlaylistIds.join("+"))
     const cachedResolution = siblingResolutionCache.get(cacheKey)
     let siblingInputs: SiblingChannelInput[]
     if (cachedResolution && cachedResolution.siblingsRef === input.siblings) {
       siblingInputs = cachedResolution.resolved
     } else {
-      const siblingCreds = await resolvePlaylistCreds(input.playlistId)
-      if (isStalePlayAttempt(generation)) return false
-      const backupCreds = await resolveBackupCreds(input.playlistId, siblingCreds)
-      if (isStalePlayAttempt(generation)) return false
+      const credsByPlaylist = new Map<string, PlaylistLiveCreds>()
+      for (const siblingPlaylist of distinctPlaylistIds) {
+        const siblingCreds = await resolvePlaylistCreds(siblingPlaylist)
+        if (isStalePlayAttempt(generation)) return false
+        const backupCreds = await resolveBackupCreds(siblingPlaylist, siblingCreds)
+        if (isStalePlayAttempt(generation)) return false
+        credsByPlaylist.set(siblingPlaylist, { creds: siblingCreds, backupCreds })
+      }
       siblingInputs = await Promise.all(
-        input.siblings.map((sibling) => resolveSiblingChannel(sibling, siblingCreds, backupCreds))
+        input.siblings.map((sibling) => {
+          const playlistCreds = credsByPlaylist.get(siblingPlaylistId(sibling, input.playlistId))
+          return resolveSiblingChannel(
+            sibling,
+            playlistCreds?.creds ?? null,
+            playlistCreds?.backupCreds ?? [],
+            composite ? liveRowKey(sibling, input.playlistId) : sibling.id
+          )
+        })
       )
       siblingResolutionCache.set(cacheKey, { siblingsRef: input.siblings, resolved: siblingInputs })
     }
     if (isStalePlayAttempt(generation)) return false
+    const initialId = composite ? liveRowKey(input.channel, input.playlistId) : input.channel.id
     const liveContextResult = siblingsToLiveContext(siblingInputs, {
-      id: input.channel.id,
+      id: initialId,
       name: input.channel.name || "",
     })
 
@@ -1153,9 +1230,25 @@ export async function playLive(input: TvPlayLiveInput, events: TvPlaybackEvents 
 
     const liveTarget: ActiveLiveTarget = {
       playlistId: input.playlistId,
-      initialChannelId: String(input.channel.id),
-      currentChannelId: String(input.channel.id),
-      siblingsById: new Map(siblingInputs.map((channel) => [String(channel.id), { name: channel.name, logo: channel.logo ?? null }])),
+      initialChannelId: String(initialId),
+      currentChannelId: String(initialId),
+      siblingsById: new Map(
+        siblingInputs.map((channel, index) => {
+          const source = input.siblings[index]
+          const entry: [string, LiveSiblingInfo] = [
+            String(channel.id),
+            {
+              name: channel.name,
+              logo: channel.logo ?? null,
+              playlistId: siblingPlaylistId(source, input.playlistId),
+              id: source.id,
+              viewKey: source.playlistId ? liveRowKey(source, input.playlistId) : String(source.id),
+            },
+          ]
+          return entry
+        })
+      ),
+      groupKey: input.groupKey ?? null,
       channels: input.siblings,
       channelInfo: {
         id: input.channel.id,
@@ -1194,7 +1287,7 @@ export async function playVod(input: TvPlayVodInput, events: TvPlaybackEvents = 
       resumeSeconds: input.resumeSeconds,
       durationSeconds: input.durationSeconds,
     })
-    descriptor.dns = (await getActiveDnsOverrideAsync())?.raw ?? null
+    descriptor.dns = (await getPlaylistDnsOverride(input.playlistId))?.raw ?? null
 
     const progressTarget: ActiveProgressTarget = {
       writer: createThrottledProgressWriter({
@@ -1240,7 +1333,7 @@ export async function playEpisode(input: TvPlayEpisodeInput, events: TvPlaybackE
       logo: input.logo ?? undefined,
       resumeSeconds: input.resumeSeconds,
     })
-    descriptor.dns = (await getActiveDnsOverrideAsync())?.raw ?? null
+    descriptor.dns = (await getPlaylistDnsOverride(input.playlistId))?.raw ?? null
 
     const progressExtras = {
       seriesId: input.seriesId,

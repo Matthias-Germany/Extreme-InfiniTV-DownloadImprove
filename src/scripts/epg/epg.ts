@@ -4,9 +4,28 @@ import { log } from "@/scripts/lib/log.js"
 import {
   loadCreds,
   getActiveEntry,
+  getMergedEntries,
+  entryToCreds,
   isLikelyM3USource,
   safeHttpUrl,
+  MERGED_CHANGED_EVENT,
 } from "@/scripts/lib/creds.js"
+import {
+  rowKey,
+  stampRowsWithPlaylist,
+  parseMergedCategoryKey,
+  mergeOrderedFavorites,
+  mergeRecents,
+  categoryLabel,
+} from "@/scripts/lib/merged-catalog-core.ts"
+import {
+  getMergedSources,
+  hydrateMergedRows,
+  readMergedRows,
+  ensureMergedRows,
+} from "@/scripts/lib/merged-catalog.ts"
+import { hasCachedLiveChannels } from "@/scripts/lib/live-catalog.ts"
+import { channelMatchesCategory, channelPassesCategoryFilter } from "@/scripts/lib/merged-live.ts"
 import { xtreamApiFetch } from "@/scripts/lib/xtream-api.js"
 import { mapXtreamLiveRows, parseCategoriesToMap } from "@/scripts/lib/catalog-mappers.js"
 import { t, initI18n, getActiveLocale, LOCALE_EVENT } from "@/scripts/lib/i18n.js"
@@ -80,12 +99,24 @@ const dayLabelEl = document.getElementById("epg-day-label")
 let creds = { host: "", port: "", user: "", pass: "" }
 let activePlaylistId = ""
 let activePlaylistTitle = ""
-/** @type {Array<{id:number,name:string,logo?:string|null,tvgId?:string,category?:string}>} */
+let mergedMode = false
+let mergedPlaylistIds = []
+let titleById = new Map()
+/** @type {Array<{id:number,playlistId:string,name:string,logo?:string|null,tvgId?:string,category?:string}>} */
 let channels = []
-/** @type {Array<{id:number,name:string,logo?:string|null,tvgId?:string,category?:string}>} */
+/** @type {Array<{id:number,playlistId:string,name:string,logo?:string|null,tvgId?:string,category?:string}>} */
 let allChannels = []
-/** @type {Map<string, Array<{start:number,stop:number,title:string,desc:string}>>} channel id (tvg-id, lower-cased) → sorted programmes */
-const programmes = new Map()
+/** @type {Map<string, Map<string, Array<{start:number,stop:number,title:string,desc:string}>>>} playlist id → tvg-id (lower-cased) → sorted programmes */
+let programmesByPlaylist = new Map()
+
+const programmesFor = (playlistId) => programmesByPlaylist.get(playlistId)
+const programmesSize = () => {
+  let total = 0
+  for (const map of programmesByPlaylist.values()) total += map.size
+  return total
+}
+const inMergedSet = (playlistId) =>
+  !!playlistId && (mergedMode ? mergedPlaylistIds.includes(playlistId) : playlistId === activePlaylistId)
 /** @type {ReturnType<typeof createTimeline> | null} */
 let timeline = null
 /** @type {{fromX:number,toX:number} | null} */
@@ -97,6 +128,7 @@ const picker = mountCategoryPicker({
   activeCatStorageKey: "xt_epg_active_cat",
   activeCatChangedEvent: "xt:epg-cat-changed",
   getActivePlaylistId: () => activePlaylistId,
+  getSources: () => getMergedSources(),
   // pickChannels filters allChannels (live-channel shape), so the picker
   // counts every entry — not just ones with a tvg-id. The schedule grid
   // continues to drop tvg-id-less rows downstream.
@@ -344,15 +376,22 @@ function updateDayNavState() {
   }
 }
 
-function navigateToLive(channelId) {
-  window.location.href = `/livetv?channel=${encodeURIComponent(String(channelId))}`
+function livetvHref(channel) {
+  return (
+    `/livetv?channel=${encodeURIComponent(String(channel.id))}` +
+    (mergedMode ? `&pl=${encodeURIComponent(channel.playlistId)}` : "")
+  )
 }
 
-function navigateToCatchup(channelId, startDisplayMs, stopDisplayMs, title, catchupId) {
-  const startUtc = displayedToUtcMs(activePlaylistId, startDisplayMs)
-  const stopUtc = displayedToUtcMs(activePlaylistId, stopDisplayMs)
+function navigateToLive(channel) {
+  window.location.href = livetvHref(channel)
+}
+
+function navigateToCatchup(channel, startDisplayMs, stopDisplayMs, title, catchupId) {
+  const startUtc = displayedToUtcMs(channel.playlistId, startDisplayMs)
+  const stopUtc = displayedToUtcMs(channel.playlistId, stopDisplayMs)
   window.location.href =
-    `/livetv?channel=${encodeURIComponent(String(channelId))}` +
+    livetvHref(channel) +
     `&cstart=${startUtc}` +
     `&cstop=${stopUtc}` +
     `&ctitle=${encodeURIComponent(title || "")}` +
@@ -434,7 +473,7 @@ function renderChannelRow(channel) {
   info.style.width = `${CHANNEL_COL_WIDTH}px`
   info.title = channel.name
   info.setAttribute("aria-label", `${channel.name} - ${t("epg.watchNow")}`)
-  info.addEventListener("click", () => navigateToLive(channel.id))
+  info.addEventListener("click", () => navigateToLive(channel))
 
   const logo = document.createElement("div")
   logo.className =
@@ -480,10 +519,10 @@ function renderChannelRow(channel) {
   nameEl.textContent = channel.name
   const sub = document.createElement("div")
   sub.className = "truncate text-2xs text-fg-3 tabular-nums"
-  const resolved = effectiveTvgId(channel, activePlaylistId)
+  const resolved = effectiveTvgId(channel, channel.playlistId)
   const isOverridden = !!(
-    activePlaylistId &&
-    getChannelEpgOverride(activePlaylistId, channel.id)
+    channel.playlistId &&
+    getChannelEpgOverride(channel.playlistId, channel.id)
   )
   if (isOverridden) {
     sub.classList.add("text-accent")
@@ -542,13 +581,14 @@ function buildProgrammeCell(channel, rowIdx, cellInfo, nowMs, canChannelCatchup)
       stop: p.stop,
       channelName: channel.name,
       channelId: channel.id,
+      onWatch: () => navigateToLive(channel),
     }
     if (canReplay) {
       dialogOpts.onCatchup = () =>
-        navigateToCatchup(channel.id, rawStart, rawStop, p.title, p.catchupId)
+        navigateToCatchup(channel, rawStart, rawStop, p.title, p.catchupId)
     } else if (isLive && canChannelCatchup && isCatchupPlayable(channel, rawStart, nowMs)) {
       dialogOpts.onWatchFromStart = () =>
-        navigateToCatchup(channel.id, rawStart, rawStop, p.title, p.catchupId)
+        navigateToCatchup(channel, rawStart, rawStop, p.title, p.catchupId)
     }
     openProgrammeDialog(dialogOpts)
   })
@@ -704,9 +744,11 @@ function renderVirtualWindow() {
   for (let idx = startIdx; idx < endIdx; idx++) {
     if (renderedRows.has(idx)) continue
     const channel = channels[idx]
-    const key = effectiveTvgId(channel, activePlaylistId)
+    const key = effectiveTvgId(channel, channel.playlistId)
     // shiftChannelProgrammes stashes rawStart/rawStop so catch-up navigation can bypass tvg-shift.
-    const list = key ? shiftChannelProgrammes(programmes.get(key) || [], channel.tvgShift) : []
+    const list = key
+      ? shiftChannelProgrammes(programmesFor(channel.playlistId)?.get(key) || [], channel.tvgShift)
+      : []
     const { row, track } = renderChannelRow(channel)
     row.style.position = "absolute"
     row.style.top = `${idx * ROW_HEIGHT}px`
@@ -914,36 +956,32 @@ function render() {
 function pickChannels(cachedChannels) {
   const activeCat = picker.getActiveCat()
   let filtered
+  const uncategorized = t("stream.uncategorized") || "Uncategorized"
+  const listedPlaylistIds = mergedMode ? mergedPlaylistIds : [activePlaylistId]
+  const rowsByKey = new Map(cachedChannels.map((channel) => [rowKey(channel), channel]))
+  const selection = parseMergedCategoryKey(activeCat, activePlaylistId)
   if (activeCat === CAT_FAVORITES && activePlaylistId) {
-    const byId = new Map(cachedChannels.map((channel) => [channel.id, channel]))
-    const orderedFavIds = getFavoritesOrdered(activePlaylistId, "live")
-    filtered = []
-    for (const favId of orderedFavIds) {
-      const channel = byId.get(favId)
-      if (channel) filtered.push(channel)
-    }
+    filtered = mergeOrderedFavorites(
+      listedPlaylistIds,
+      (playlistId) => getFavoritesOrdered(playlistId, "live"),
+      rowsByKey
+    )
   } else if (activeCat === CAT_RECENTS && activePlaylistId) {
-    const byId = new Map(cachedChannels.map((channel) => [channel.id, channel]))
-    const recents = getRecents(activePlaylistId, "live")
-    filtered = []
-    for (const recent of recents) {
-      const channel = byId.get(recent.id)
-      if (channel) filtered.push(channel)
-    }
-  } else if (activeCat) {
-    filtered = cachedChannels.filter((channel) => (channel.category || "") === activeCat)
+    filtered = mergeRecents(listedPlaylistIds, (playlistId) => getRecents(playlistId, "live"), rowsByKey)
+  } else if (selection) {
+    filtered = cachedChannels.filter((channel) => channelMatchesCategory(channel, selection, uncategorized))
   } else {
     // Honor the resolved hide / allow filter (issue #62). Sync defaults on
     // so EPG starts out aligned with Live TV's category choices.
     filtered = cachedChannels.filter((channel) =>
-      picker.categoryPassesFilter((channel.category || "").toString())
+      channelPassesCategoryFilter(channel, (key) => picker.categoryPassesFilter(key), uncategorized)
     )
   }
   // Drop channels with no resolvable tvg-id - they have no EPG match. A
   // user-supplied per-channel override (Jellyfin-style) counts as resolvable
   // even when channel.tvgId is empty.
   const withEpg = filtered.filter((channel) =>
-    !!effectiveTvgId(channel, activePlaylistId)
+    !!effectiveTvgId(channel, channel.playlistId)
   )
   // Mirror Live TV's saved sort
   const sortMode = activePlaylistId
@@ -976,12 +1014,15 @@ async function fetchXtreamChannels() {
 function syncCategoryTitle() {
   if (!titleEl) return
   const activeCat = picker.getActiveCat()
+  const selection = picker.getActiveSelection()
   const display =
     activeCat === CAT_FAVORITES
       ? t("list.specialFavorites")
       : activeCat === CAT_RECENTS
         ? t("list.specialRecents")
-        : activeCat
+        : selection
+          ? categoryLabel(selection.name, titleById.get(selection.playlistId) || "", mergedMode)
+          : ""
   titleEl.textContent = display
     ? t("epg.subtitleWith", { category: display })
     : t("epg.subtitleAll")
@@ -1001,7 +1042,7 @@ function applyCategory() {
     }
     return
   }
-  if (!programmes.size) {
+  if (!programmesSize()) {
     showStatus(t("epg.noProgrammesMatched"))
     return
   }
@@ -1015,7 +1056,7 @@ document.addEventListener("xt:epg-cat-changed", () => {
 
 const onEpgPrefChange = (event: Event) => {
   const detail = (event as CustomEvent).detail
-  if (!detail || detail.playlistId !== activePlaylistId) return
+  if (!detail || !inMergedSet(detail.playlistId)) return
   // Picker module already filters internally; we just need to re-pick.
   applyCategory()
 }
@@ -1025,35 +1066,104 @@ document.addEventListener("xt:category-mode-changed", onEpgPrefChange)
 document.addEventListener("xt:epg-sync-changed", onEpgPrefChange)
 document.addEventListener(CHANNEL_EPG_CHANGED_EVENT, (event) => {
   const detail = (event as CustomEvent).detail
-  if (!detail || detail.playlistId !== activePlaylistId) return
+  if (!detail || !inMergedSet(detail.playlistId)) return
   applyCategory()
 })
 
+let initGeneration = 0
+
+async function loadMergedChannelRows(entries, generation) {
+  mergedMode = true
+  mergedPlaylistIds = entries.map((entry) => entry._id)
+  titleById = new Map(entries.map((entry) => [entry._id, entry.title || ""]))
+  const active = await getActiveEntry()
+  if (generation !== initGeneration) return null
+  activePlaylistId = active?._id || mergedPlaylistIds[0]
+  activePlaylistTitle = titleById.get(activePlaylistId) || ""
+  creds = entryToCreds(entries.find((entry) => entry._id === activePlaylistId))
+  await ensurePrefsLoaded()
+  if (generation !== initGeneration) return null
+  syncCategoryTitle()
+
+  await hydrateMergedRows("live")
+  if (generation !== initGeneration) return null
+  let rows = readMergedRows("live").rows
+  if (!rows.length || !mergedPlaylistIds.every((playlistId) => hasCachedLiveChannels(playlistId))) {
+    showLoadingSkeleton(t("epg.loadingChannels"))
+    const result = await ensureMergedRows("live")
+    if (generation !== initGeneration) return null
+    rows = result.rows
+    if (!rows.length && result.errors.size) {
+      showProviderError("channels")
+      return null
+    }
+  }
+  return rows.filter((row) => !row.isHeader)
+}
+
+async function loadAllProgrammes(sources, generation) {
+  const results = await Promise.allSettled(
+    sources.map((source) => loadProgrammes(source.playlistId, source.creds))
+  )
+  if (generation !== initGeneration) return
+  programmesByPlaylist = new Map()
+  let anyLoaded = false
+  results.forEach((result, index) => {
+    if (result.status !== "fulfilled" || !result.value) return
+    programmesByPlaylist.set(sources[index].playlistId, new Map(result.value.programmes))
+    anyLoaded = true
+  })
+  if (!anyLoaded) throw new Error("EPG fetch failed")
+}
+
 async function init() {
+  const generation = ++initGeneration
   // Wait for the locale JSON to resolve before any t() call so the page
   // never flashes an English string that gets replaced 100ms later.
   await initI18n()
+  if (generation !== initGeneration) return
   showLoadingSkeleton(t("epg.loadingSkeleton"))
 
-  creds = await loadCreds()
+  const mergedEntries = await getMergedEntries()
+  if (generation !== initGeneration) return
+  if (mergedEntries.length >= 2) {
+    const mergedRows = await loadMergedChannelRows(mergedEntries, generation)
+    if (!mergedRows || generation !== initGeneration) return
+    await finishInit(
+      mergedRows,
+      mergedEntries.map((entry) => ({ playlistId: entry._id, creds: entryToCreds(entry) })),
+      generation
+    )
+    return
+  }
+  mergedMode = false
+
+  const loadedCreds = await loadCreds()
+  if (generation !== initGeneration) return
+  creds = loadedCreds
   if (!creds.host) {
     showStatus(t("epg.noPlaylistSelected"))
     return
   }
 
   const active = await getActiveEntry()
+  if (generation !== initGeneration) return
   if (!active) {
     showStatus(t("epg.noPlaylistSelected"))
     return
   }
   activePlaylistId = active._id
   activePlaylistTitle = active.title || ""
+  mergedPlaylistIds = [active._id]
+  titleById = new Map([[active._id, activePlaylistTitle]])
   await ensurePrefsLoaded()
+  if (generation !== initGeneration) return
   syncCategoryTitle()
 
   const isM3U = isLikelyM3USource(creds.host, creds.user, creds.pass)
   // Hydrate from IDB before reading
   await hydrateCache(activePlaylistId, isM3U ? "m3u" : "live")
+  if (generation !== initGeneration) return
   let cached = readCachedLiveChannels(activePlaylistId)
   if (!cached.length) cached = null
 
@@ -1067,14 +1177,22 @@ async function init() {
     showLoadingSkeleton(t("epg.loadingChannels"))
     try {
       cached = await fetchXtreamChannels()
+      if (generation !== initGeneration) return
     } catch (e) {
+      if (generation !== initGeneration) return
       log.error("[epg] channel re-fetch failed:", e)
       showProviderError("channels")
       return
     }
   }
 
-  allChannels = cached
+  await finishInit(stampRowsWithPlaylist(cached, activePlaylistId), [
+    { playlistId: activePlaylistId, creds },
+  ], generation)
+}
+
+async function finishInit(channelRows, programmeSources, generation) {
+  allChannels = channelRows
   picker.rerender()
 
   timeline = buildTimeline()
@@ -1082,23 +1200,22 @@ async function init() {
   updateDayLabel()
   updateDayNavState()
   showLoadingSkeleton(t("epg.loadingFull"))
-  programmes.clear()
   try {
-    const state = await loadProgrammes(activePlaylistId, creds)
-    if (!state) throw new Error("EPG fetch failed")
-    for (const [k, v] of state.programmes) programmes.set(k, v)
+    await loadAllProgrammes(programmeSources, generation)
   } catch (e) {
+    if (generation !== initGeneration) return
     log.error("[epg] load failed:", e)
     showProviderError("EPG")
     return
   }
+  if (generation !== initGeneration) return
 
-  if (!programmes.size) {
+  if (!programmesSize()) {
     showStatus(t("epg.noProgrammesMatched"))
     return
   }
 
-  channels = pickChannels(cached)
+  channels = pickChannels(channelRows)
   if (!channels.length) {
     const activeCat = picker.getActiveCat()
     if (activeCat === CAT_FAVORITES) {
@@ -1166,8 +1283,8 @@ function scrollGridBy(deltaPx) {
 }
 
 refreshBtn?.addEventListener("click", () => {
-  if (activePlaylistId) invalidateEpgPlaylist(activePlaylistId)
-  programmes.clear()
+  for (const playlistId of mergedPlaylistIds) invalidateEpgPlaylist(playlistId)
+  programmesByPlaylist = new Map()
   init()
 })
 
@@ -1189,24 +1306,30 @@ laterBtn?.addEventListener("click", () => scrollGridBy(SCRUB_HOURS * PX_PER_HOUR
 
 document.addEventListener(EPG_OFFSET_EVENT, (e) => {
   const detail = /** @type {CustomEvent} */ (e).detail
-  if (!detail || detail.playlistId !== activePlaylistId) return
-  programmes.clear()
+  if (!detail || !inMergedSet(detail.playlistId)) return
+  programmesByPlaylist = new Map()
   init()
 })
 
 setInterval(() => {
-  if (programmes.size && channels.length) renderNowLine()
+  if (programmesSize() && channels.length) renderNowLine()
 }, 60 * 1000)
 
 document.addEventListener("xt:active-changed", () => {
-  programmes.clear()
+  programmesByPlaylist = new Map()
+  allChannels = []
+  init()
+})
+
+document.addEventListener(MERGED_CHANGED_EVENT, () => {
+  programmesByPlaylist = new Map()
   allChannels = []
   init()
 })
 
 document.addEventListener("xt:favorites-changed", (e) => {
   const detail = /** @type {CustomEvent} */ (e).detail
-  if (!detail || detail.playlistId !== activePlaylistId) return
+  if (!detail || !inMergedSet(detail.playlistId)) return
   if (detail.kind !== "live") return
   if (allChannels.length) picker.refreshPseudoRows()
   if (picker.getActiveCat() === CAT_FAVORITES) applyCategory()
@@ -1214,7 +1337,7 @@ document.addEventListener("xt:favorites-changed", (e) => {
 
 document.addEventListener("xt:recents-changed", (e) => {
   const detail = /** @type {CustomEvent} */ (e).detail
-  if (!detail || detail.playlistId !== activePlaylistId) return
+  if (!detail || !inMergedSet(detail.playlistId)) return
   if (detail.kind !== "live") return
   if (allChannels.length) picker.refreshPseudoRows()
   if (picker.getActiveCat() === CAT_RECENTS) applyCategory()

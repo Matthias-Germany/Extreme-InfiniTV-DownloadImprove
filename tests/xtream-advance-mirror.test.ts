@@ -33,6 +33,7 @@ vi.mock("@/scripts/lib/creds.js", () => ({
   getMirrorPin: (entryId: string) =>
     activeEntry && entryId === activeEntry._id ? mirrorPin : otherMirrorPins.get(entryId) || 0,
   setMirrorPin: (entryId: string, index: number) => setMirrorPin(entryId, index),
+  getEntryDnsOverride: () => null,
 }))
 
 import { advanceMirror, resolveStreamUrl } from "@/scripts/lib/xtream-api.js"

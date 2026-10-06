@@ -111,3 +111,20 @@ describe("siblingsToLiveContext", () => {
     expect(result?.channels[1].backupUrls).toBeUndefined()
   })
 })
+
+describe("siblingsToLiveContext with composite ids", () => {
+  const fromA: SiblingChannelInput = { id: "pl-a:1", name: "A1", streamUrl: "https://a/1.m3u8" }
+  const fromB: SiblingChannelInput = { id: "pl-b:1", name: "B1", streamUrl: "https://b/1.m3u8" }
+
+  it("keeps rows from different playlists that share a raw id", () => {
+    const result = siblingsToLiveContext([fromA, fromB], fromB)
+    expect(result?.channels.map((channel) => channel.id)).toEqual(["pl-a:1", "pl-b:1"])
+    expect(result?.initialChannelId).toBe("pl-b:1")
+  })
+
+  it("still dedupes an identical composite id", () => {
+    const result = siblingsToLiveContext([fromA, { ...fromA, name: "dup" }, fromB], fromA)
+    expect(result?.channels.map((channel) => channel.name)).toEqual(["A1", "B1"])
+  })
+})
+

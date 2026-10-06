@@ -2,12 +2,14 @@
 // Movie detail page (route: /movies/detail?id=<vod_id>)
 import { log } from "@/scripts/lib/log.js"
 import {
-  loadCreds,
   getActiveEntry,
+  getEntryById,
+  entryToCreds,
   fmtBase,
   isTauri,
-  getActiveDnsOverrideAsync,
+  getPlaylistDnsOverride,
 } from "@/scripts/lib/creds.js"
+import { detailHrefFor, readDetailPlaylistParam } from "@/scripts/lib/detail-href.ts"
 import { xtreamApiFetch, resolveStreamUrl } from "@/scripts/lib/xtream-api.js"
 import { isProviderRejection } from "@/scripts/lib/stream-reject.ts"
 import { createMirrorHopper } from "@/scripts/lib/vod-mirror-hop.ts"
@@ -154,8 +156,9 @@ wireDetailBackLink(backLink, "/movies")
 // ----------------------------
 const urlParams = new URLSearchParams(location.search)
 const movieId = Number(urlParams.get("id") || "0")
+const requestedPlaylistId = readDetailPlaylistParam(location.search)
 let wantsAutoplay = urlParams.get("autoplay") === "1"
-let activePlaylistId = ""
+let detailPlaylistId = ""
 let creds = { host: "", port: "", user: "", pass: "" }
 let movie = null
 let vodInfoRaw = null
@@ -331,7 +334,7 @@ function applyVodInfo(data) {
   metaGenreText = genre || ""
   metaRatingText = fmtImdbRating(rating)
   renderMetaLine()
-  if (activePlaylistId) noteDetailGenres(activePlaylistId, "vod", movieId, genre)
+  if (detailPlaylistId) noteDetailGenres(detailPlaylistId, "vod", movieId, genre)
   providerPlotApplied = Boolean(plot.trim())
   if (plotEl) plotEl.textContent = plot || t("detail.noDescription")
 
@@ -436,7 +439,7 @@ function patchGenreFromEnrichment(genres) {
   if (!genres?.length || metaGenreText) return
   metaGenreText = genres.join(", ")
   renderMetaLine()
-  if (activePlaylistId) noteDetailGenres(activePlaylistId, "vod", movieId, metaGenreText)
+  if (detailPlaylistId) noteDetailGenres(detailPlaylistId, "vod", movieId, metaGenreText)
 }
 
 function patchYearFromEnrichment(year) {
@@ -476,7 +479,7 @@ function renderSimilar(matches) {
     listEl: similarListEl,
     matches,
     kind: "vod",
-    activePlaylistId,
+    playlistId: detailPlaylistId,
     detailHrefBase: "/movies/detail",
     fallbackTitleKey: "list.movieFallback",
   })
@@ -493,12 +496,12 @@ function adoptCatalogRow(catalog) {
 
 // The in-memory catalog is empty on a deep link, so load it instead of giving up on the rail.
 function loadVodCatalog() {
-  if (!activePlaylistId) return Promise.resolve([])
-  const cached = getCached(activePlaylistId, "vod")?.data
+  if (!detailPlaylistId) return Promise.resolve([])
+  const cached = getCached(detailPlaylistId, "vod")?.data
   if (cached?.length) return Promise.resolve(cached)
   if (!vodCatalogPromise) {
     const catalogLoadStartedAtMs = performance.now()
-    vodCatalogPromise = ensureVod(creds, activePlaylistId)
+    vodCatalogPromise = ensureVod(creds, detailPlaylistId)
       .then((catalog) => {
         adoptCatalogRow(catalog)
         log.debug("[xt:movie-detail] vod catalog loaded", `items=${catalog.length} ms=${Math.round(performance.now() - catalogLoadStartedAtMs)}`)
@@ -515,7 +518,7 @@ function loadVodCatalog() {
 const getGroupingIndexFor = createGroupingIndexMemo()
 
 function groupKeyForCatalog(catalog) {
-  return sharedGroupKeyForCatalog(activePlaylistId, catalog, getGroupingIndexFor)
+  return sharedGroupKeyForCatalog(detailPlaylistId, catalog, getGroupingIndexFor)
 }
 
 function renderLanguagePills(catalog) {
@@ -523,7 +526,7 @@ function renderLanguagePills(catalog) {
     langsEl,
     item: movie,
     kind: "vod",
-    activePlaylistId,
+    playlistId: detailPlaylistId,
     catalog,
     getGroupingIndexFor,
     detailHrefBase: "/movies/detail",
@@ -555,7 +558,7 @@ function applyEnrichmentPatch(enrichment) {
 // Returns whether the similar rail was populated from TMDb recommendations.
 async function enrichMovieDetailFromTmdb(requestId) {
   // No isTmdbActive() gate: the TheTVDB proxy enriches without a user key.
-  if (!movie || !activePlaylistId) {
+  if (!movie || !detailPlaylistId) {
     settleHero()
     return false
   }
@@ -572,7 +575,7 @@ async function enrichMovieDetailFromTmdb(requestId) {
 
   const enrichment = await resolveTitleEnrichment({
     kind: "movie",
-    playlistId: activePlaylistId,
+    playlistId: detailPlaylistId,
     itemId: String(movie.id),
     name: movie.name,
     year: parseInt(String(movie.year || movieData.releasedate || movieData.year || info.year), 10) || null,
@@ -611,7 +614,7 @@ function providerInfoForVod(cachedData) {
 }
 
 async function populateLocalSimilarRail(requestId) {
-  if (!movie || !activePlaylistId) return
+  if (!movie || !detailPlaylistId) return
   const catalog = await loadVodCatalog()
   if (requestId !== enrichRequestId) return
   renderLanguagePills(catalog)
@@ -627,7 +630,7 @@ async function populateLocalSimilarRail(requestId) {
     {
       limit: 12,
       infoLookup: (id) => {
-        const cached = getCached(activePlaylistId, `vod_info_${id}`)?.data
+        const cached = getCached(detailPlaylistId, `vod_info_${id}`)?.data
         return cached ? parseProviderPeople(providerInfoForVod(cached)) : null
       },
       sourcePrefix: parseNamePrefix(movie.name).tag,
@@ -659,16 +662,16 @@ async function populateSimilarRail(requestId) {
 }
 
 function syncFavButton() {
-  if (!favBtn || !movie || !activePlaylistId) return
-  const fav = isFavorite(activePlaylistId, "vod", movie.id)
+  if (!favBtn || !movie || !detailPlaylistId) return
+  const fav = isFavorite(detailPlaylistId, "vod", movie.id)
   favBtn.textContent = fav ? t("detail.action.removeFavorite") : t("detail.action.addFavorite")
   favBtn.classList.toggle("text-accent", fav)
   favBtn.setAttribute("aria-pressed", String(fav))
 }
 
 function syncWatchButton() {
-  if (!watchBtn || !movie || !activePlaylistId) return
-  const onWatchlist = isOnWatchlist(activePlaylistId, "vod", movie.id)
+  if (!watchBtn || !movie || !detailPlaylistId) return
+  const onWatchlist = isOnWatchlist(detailPlaylistId, "vod", movie.id)
   if (watchLabelEl) {
     watchLabelEl.textContent = onWatchlist ? t("detail.watchlist.on") : t("detail.action.watchLater")
   }
@@ -687,8 +690,8 @@ function fmtClock(seconds) {
 
 function syncResumeUI() {
   if (!playBtn || !movie) return
-  const saved = activePlaylistId
-    ? getProgress(activePlaylistId, "vod", movie.id)
+  const saved = detailPlaylistId
+    ? getProgress(detailPlaylistId, "vod", movie.id)
     : null
   const canResume =
     saved && !saved.completed && saved.position > RESUME_MIN_SECONDS
@@ -772,8 +775,8 @@ function setupPipButton(player) {
 const videoScaleController = createVideoScaleController(() => (vjs ? vjs.el() : null), () => vjs)
 
 function resolveVideoScaleMode() {
-  if (activePlaylistId && movie) {
-    const override = getVideoScaleOverride(activePlaylistId, "vod", movie.id)
+  if (detailPlaylistId && movie) {
+    const override = getVideoScaleOverride(detailPlaylistId, "vod", movie.id)
     if (override) return override
   }
   return getVideoScale()
@@ -789,7 +792,7 @@ document.addEventListener(VIDEO_SCALE_EVENT, () => {
 
 document.addEventListener(CHANNEL_VIDEO_SCALE_CHANGED_EVENT, (e) => {
   const detail = e.detail
-  if (!detail || detail.playlistId !== activePlaylistId || detail.kind !== "vod") return
+  if (!detail || detail.playlistId !== detailPlaylistId || detail.kind !== "vod") return
   if (!movie) return
   if (detail.itemId === null || detail.itemId === movie.id) applyVideoScale()
 })
@@ -835,14 +838,14 @@ async function openDisplayModeDialog() {
   applyVideoScale()
   if (!result) return
   if (result.applyToAll) {
-    if (activePlaylistId) clearAllVideoScaleOverrides(activePlaylistId, "vod")
+    if (detailPlaylistId) clearAllVideoScaleOverrides(detailPlaylistId, "vod")
     setVideoScale(result.mode)
     toast({
       title: t("stream.scale.toastDefault", { mode: t(videoScaleModeLabelKey(result.mode)) }),
       duration: 2200,
     })
-  } else if (activePlaylistId) {
-    setVideoScaleOverride(activePlaylistId, "vod", movie.id, result.mode)
+  } else if (detailPlaylistId) {
+    setVideoScaleOverride(detailPlaylistId, "vod", movie.id, result.mode)
   }
 }
 
@@ -892,8 +895,8 @@ async function startPlayback(options = {}) {
     const title = movie.name || ""
     await routePlayToCast({
       contentTitle: title || null,
-      contentHref: `/movies/detail?id=${movie.id}`,
-      vodContext: activePlaylistId ? { playlistId: activePlaylistId, vodId: String(movie.id) } : undefined,
+      contentHref: detailHrefFor("vod", movie.id, { playlistId: detailPlaylistId }),
+      vodContext: detailPlaylistId ? { playlistId: detailPlaylistId, vodId: String(movie.id) } : undefined,
       stopLocal: () => {
         try { vjs?.pause?.() } catch {}
         try { vjs?.reset?.() } catch {}
@@ -903,12 +906,12 @@ async function startPlayback(options = {}) {
       buildDescriptor: async () => {
         let src = null
         try {
-          src = detailSrcBuilder ? await resolveStreamUrl(detailSrcBuilder) : detailSrc || null
+          src = detailSrcBuilder ? await resolveStreamUrl(detailSrcBuilder, { entryId: detailPlaylistId }) : detailSrc || null
         } catch (err) {
           log.warn("[xt:movie-detail] failed to resolve cast stream url:", err)
         }
         if (!src || !isCastableSrc(src)) return null
-        const saved = activePlaylistId ? getProgress(activePlaylistId, "vod", movie.id) : null
+        const saved = detailPlaylistId ? getProgress(detailPlaylistId, "vod", movie.id) : null
         const resumeSeconds =
           saved && !saved.completed && saved.position > RESUME_MIN_SECONDS ? saved.position : 0
         const durationSeconds = knownVodDurationSeconds()
@@ -919,7 +922,7 @@ async function startPlayback(options = {}) {
           resumeSeconds,
           durationSeconds: durationSeconds > 0 ? durationSeconds : undefined,
         })
-        descriptor.dns = (await getActiveDnsOverrideAsync())?.raw ?? null
+        descriptor.dns = (await getPlaylistDnsOverride(detailPlaylistId))?.raw ?? null
         return descriptor
       },
     })
@@ -930,6 +933,7 @@ async function startPlayback(options = {}) {
 
   const tryMirrorHop = createMirrorHopper({
     buildUrl: detailSrcBuilder,
+    entryId: detailPlaylistId,
     isCurrent: () => requestId === playRequestId,
     logTag: "[xt:movie-detail]",
     hopsUsed: mirrorHopsUsed,
@@ -955,7 +959,7 @@ async function startPlayback(options = {}) {
     detailSrc = options.overrideSrc
   } else if (detailSrcBuilder) {
     // Probe the URL against the configured backup domains
-    const resolved = await resolveStreamUrl(detailSrcBuilder)
+    const resolved = await resolveStreamUrl(detailSrcBuilder, { entryId: detailPlaylistId })
     if (resolved) detailSrc = resolved
   }
 
@@ -963,12 +967,12 @@ async function startPlayback(options = {}) {
   // Ahead of every await that can register a proxy/remux session for this run.
   retirePreviousPlayback()
 
-  if (activePlaylistId) {
-    pushRecent(activePlaylistId, "vod", movie.id, movie.name, movie.logo || null)
+  if (detailPlaylistId) {
+    pushRecent(detailPlaylistId, "vod", movie.id, movie.name, movie.logo || null)
   }
 
-  const saved = activePlaylistId
-    ? getProgress(activePlaylistId, "vod", movie.id)
+  const saved = detailPlaylistId
+    ? getProgress(detailPlaylistId, "vod", movie.id)
     : null
   const resumePos =
     saved && !saved.completed && saved.position > RESUME_MIN_SECONDS
@@ -979,11 +983,11 @@ async function startPlayback(options = {}) {
         })()
       : 0
 
-  if (activePlaylistId) {
-    const nativeDns = (await getActiveDnsOverrideAsync())?.raw ?? null
+  if (detailPlaylistId) {
+    const nativeDns = (await getPlaylistDnsOverride(detailPlaylistId))?.raw ?? null
     if (requestId !== playRequestId) return
     const launched = await tryAndroidNativeVodPlayback({
-      playlistId: activePlaylistId,
+      playlistId: detailPlaylistId,
       kind: "vod",
       id: movie.id,
       contentKey: `vod:${movie.id}`,
@@ -1031,7 +1035,7 @@ async function startPlayback(options = {}) {
     prematureEndedLogTag: "[xt:movies-detail]",
     contentId: movie.id,
     remuxContentKind: "movie",
-    playlistId: activePlaylistId,
+    playlistId: detailPlaylistId,
     playSrc,
     mimeFallbackSrc: mountSrc,
     localDownloadPath,
@@ -1098,16 +1102,16 @@ async function startPlayback(options = {}) {
       progressListenersBound = true
       registerListeners()
     },
-    hasActiveContent: () => !!activePlaylistId && !!movie,
+    hasActiveContent: () => !!detailPlaylistId && !!movie,
     writeProgress: (pos, dur) => {
-      setProgress(activePlaylistId, "vod", movie.id, pos, dur, {
+      setProgress(detailPlaylistId, "vod", movie.id, pos, dur, {
         name: movie.name,
         logo: movie.logo || null,
       })
     },
     recordPlaybackEndedSession: () => getMovieInsights().endSession("ended"),
     markContentCompleted: (dur) => {
-      markCompleted(activePlaylistId, "vod", movie.id, { duration: dur })
+      markCompleted(detailPlaylistId, "vod", movie.id, { duration: dur })
     },
     onMounted: () => {
       pushMoviePresence()
@@ -1117,9 +1121,9 @@ async function startPlayback(options = {}) {
 }
 
 function pushMoviePresence() {
-  if (!activePlaylistId || !movie) return
+  if (!detailPlaylistId || !movie) return
   setRichPresence({
-    playlistId: activePlaylistId,
+    playlistId: detailPlaylistId,
     details: movie.name || t("detail.discord.watchingMovie") || "Watching a movie",
     state: movie.year ? `Released ${movie.year}` : "Movie",
     largeImage: movie.logo || "logo",
@@ -1137,19 +1141,19 @@ async function launchExternalPlayback(backend, src, resumeSeconds, movieId) {
       || `Launching ${backend.toUpperCase()}…`,
     duration: 2000,
   })
-  const trackPrefs = activePlaylistId ? getTrackPrefs(activePlaylistId, "vod", movieId) : null
+  const trackPrefs = detailPlaylistId ? getTrackPrefs(detailPlaylistId, "vod", movieId) : null
   const result = await launcher.launch(src, {
     resumeSeconds,
     tracks: trackPrefs
       ? { audioLang: trackPrefs.audioLang, subLang: trackPrefs.subLang, subOff: trackPrefs.subOff }
       : null,
   })
-  if (result.sessionId && activePlaylistId && backend === "mpv") {
+  if (result.sessionId && detailPlaylistId && backend === "mpv") {
     beginExternalSession({
       sessionId: result.sessionId,
       kind: "mpv",
       srcKey: externalSrcKey(result.src),
-      playlistId: activePlaylistId,
+      playlistId: detailPlaylistId,
       contentKind: "vod",
       contentId: String(movieId),
       extras: { name: movie?.name || "", logo: movie?.logo || null },
@@ -1173,8 +1177,8 @@ document.addEventListener("keydown", (event) => subtitleDelayController.handleKe
 playBtn?.addEventListener("click", startPlayback)
 
 restartBtn?.addEventListener("click", () => {
-  if (!movie || !activePlaylistId) return
-  clearProgress(activePlaylistId, "vod", movie.id)
+  if (!movie || !detailPlaylistId) return
+  clearProgress(detailPlaylistId, "vod", movie.id)
   startPlayback()
 })
 
@@ -1185,8 +1189,8 @@ const externalBtnHandle = setupExternalPlayerButton(
       return detailSrc || null
     },
     getResumeSeconds() {
-      if (!activePlaylistId || !movie) return 0
-      const saved = getProgress(activePlaylistId, "vod", movie.id)
+      if (!detailPlaylistId || !movie) return 0
+      const saved = getProgress(detailPlaylistId, "vod", movie.id)
       if (!saved || saved.completed) return 0
       return saved.position > RESUME_MIN_SECONDS ? saved.position : 0
     },
@@ -1194,14 +1198,14 @@ const externalBtnHandle = setupExternalPlayerButton(
       return movie?.name || null
     },
     getTrackPrefs() {
-      if (!activePlaylistId || !movie) return null
-      const prefs = getTrackPrefs(activePlaylistId, "vod", movie.id)
+      if (!detailPlaylistId || !movie) return null
+      const prefs = getTrackPrefs(detailPlaylistId, "vod", movie.id)
       return prefs ? { audioLang: prefs.audioLang, subLang: prefs.subLang, subOff: prefs.subOff } : null
     },
     getProgressTarget() {
-      if (!activePlaylistId || !movie) return null
+      if (!detailPlaylistId || !movie) return null
       return {
-        playlistId: activePlaylistId,
+        playlistId: detailPlaylistId,
         kind: "vod",
         id: String(movie.id),
         extras: { name: movie.name, logo: movie.logo || null },
@@ -1229,6 +1233,7 @@ const externalBtnHandle = setupExternalPlayerButton(
 const playTvBtnHandle = setupPlayOnTvButton(
   document.getElementById("movie-detail-play-tv"),
   {
+    getPlaylistId: () => detailPlaylistId,
     getSrcBuilder() {
       return detailSrcBuilder
     },
@@ -1242,8 +1247,8 @@ const playTvBtnHandle = setupPlayOnTvButton(
       return movie?.logo || null
     },
     getResumeSeconds() {
-      if (!activePlaylistId || !movie) return 0
-      const saved = getProgress(activePlaylistId, "vod", movie.id)
+      if (!detailPlaylistId || !movie) return 0
+      const saved = getProgress(detailPlaylistId, "vod", movie.id)
       if (!saved || saved.completed) return 0
       return saved.position > RESUME_MIN_SECONDS ? saved.position : 0
     },
@@ -1252,8 +1257,8 @@ const playTvBtnHandle = setupPlayOnTvButton(
       return seconds > 0 ? seconds : undefined
     },
     getCastContext() {
-      if (!activePlaylistId || !movie) return null
-      return { vodContext: { playlistId: activePlaylistId, vodId: String(movie.id) } }
+      if (!detailPlaylistId || !movie) return null
+      return { vodContext: { playlistId: detailPlaylistId, vodId: String(movie.id) } }
     },
     beforeCast() {
       try { vjs?.pause?.() } catch {}
@@ -1268,7 +1273,7 @@ subscribeExternalPlayerExit(() => {
 
 document.addEventListener("xt:progress-changed", (e) => {
   const detail = e.detail
-  if (!detail || detail.playlistId !== activePlaylistId) return
+  if (!detail || detail.playlistId !== detailPlaylistId) return
   if (detail.kind !== "vod") return
   if (movie?.id !== detail.id) return
   syncResumeUI()
@@ -1276,11 +1281,11 @@ document.addEventListener("xt:progress-changed", (e) => {
 
 window.addEventListener("pagehide", () => {
   try {
-    if (activePlaylistId && movie && vjs) {
+    if (detailPlaylistId && movie && vjs) {
       const pos = vjs.currentTime?.() || 0
       const dur = vjs.duration?.() || 0
       if (pos > 1) {
-        setProgress(activePlaylistId, "vod", movie.id, pos, dur, {
+        setProgress(detailPlaylistId, "vod", movie.id, pos, dur, {
           name: movie.name,
           logo: movie.logo || null,
         })
@@ -1300,9 +1305,9 @@ window.addEventListener("pagehide", () => {
 // Favorites
 // ----------------------------
 favBtn?.addEventListener("click", () => {
-  if (!movie || !activePlaylistId) return
+  if (!movie || !detailPlaylistId) return
   const isStubName = movie.name === t("list.movieFallback", { id: movie.id })
-  toggleFavorite(activePlaylistId, "vod", movie.id, {
+  toggleFavorite(detailPlaylistId, "vod", movie.id, {
     name: isStubName ? "" : movie.name || movie.title || "",
     logo: movie.logo || movie.cover || movie.stream_icon || null,
   })
@@ -1310,7 +1315,7 @@ favBtn?.addEventListener("click", () => {
 
 document.addEventListener("xt:favorites-changed", (e) => {
   const detail = e.detail
-  if (!detail || detail.playlistId !== activePlaylistId) return
+  if (!detail || detail.playlistId !== detailPlaylistId) return
   if (detail.kind !== "vod") return
   if (movie?.id === detail.id) syncFavButton()
 })
@@ -1319,9 +1324,9 @@ document.addEventListener("xt:favorites-changed", (e) => {
 // Watchlist
 // ----------------------------
 watchBtn?.addEventListener("click", () => {
-  if (!movie || !activePlaylistId) return
+  if (!movie || !detailPlaylistId) return
   const isStubName = movie.name === t("list.movieFallback", { id: movie.id })
-  toggleWatchlist(activePlaylistId, "vod", movie.id, {
+  toggleWatchlist(detailPlaylistId, "vod", movie.id, {
     name: isStubName ? "" : movie.name || movie.title || "",
     logo: movie.logo || movie.cover || movie.stream_icon || null,
   })
@@ -1329,7 +1334,7 @@ watchBtn?.addEventListener("click", () => {
 
 document.addEventListener("xt:watchlist-changed", (e) => {
   const detail = e.detail
-  if (!detail || detail.playlistId !== activePlaylistId) return
+  if (!detail || detail.playlistId !== detailPlaylistId) return
   if (detail.kind !== "vod") return
   if (movie?.id === detail.id) syncWatchButton()
 })
@@ -1451,7 +1456,7 @@ downloadBtn?.addEventListener("click", async () => {
       ext: inferExt(detailSrc, "mp4"),
       source: {
         kind: "vod",
-        playlistId: activePlaylistId,
+        playlistId: detailPlaylistId,
         id: movie.id,
         logo: movie.logo || null,
       },
@@ -1541,21 +1546,28 @@ async function boot() {
   }
   resetTmdbEnrichmentUI()
 
-  const active = await getActiveEntry()
-  if (!active) {
+  const requestedEntry = requestedPlaylistId ? await getEntryById(requestedPlaylistId) : null
+  if (requestedPlaylistId && !requestedEntry) {
+    log.warn("[xt:movie-detail] requested playlist not found:", requestedPlaylistId)
+  }
+  const entry = requestedEntry ?? (await getActiveEntry())
+  if (!entry) {
     showError(t("detail.error.noPlaylist"))
     return
   }
-  activePlaylistId = active._id
+  detailPlaylistId = entry._id
   await ensurePrefsLoaded()
-  creds = await loadCreds()
+  creds = entryToCreds(entry)
 
   // Hydrate the basics from the cached VOD list (poster, title, etc.).
-  const list = getCached(active._id, "vod")
+  const list = getCached(detailPlaylistId, "vod")
   const catalogMovie = list?.data?.find((entry) => Number(entry.id) === movieId) || null
 
   const dl = listDownloads().find(
-    (d) => d.source?.kind === "vod" && Number(d.source?.id) === movieId
+    (d) =>
+      d.source?.kind === "vod" &&
+      Number(d.source?.id) === movieId &&
+      (!d.source?.playlistId || d.source.playlistId === detailPlaylistId)
   )
 
   const stubName = t("list.movieFallback", { id: movieId })
@@ -1588,9 +1600,9 @@ async function boot() {
   // so a cold IDB read can never delay first paint past the shared timeout.
   const { enrichment: earlyEnrichment, providerInfo: earlyProviderInfo } = await peekEarlyTitleEnrichment(
     "movie",
-    active._id,
+    detailPlaylistId,
     String(movie.id),
-    active._id,
+    detailPlaylistId,
     `vod_info_${movieId}`
   )
   if (enrichRequestIdForThisBoot !== enrichRequestId) return
@@ -1644,10 +1656,10 @@ async function boot() {
     const vodInfoFetchStartedAtMs = performance.now()
     log.debug("[xt:movie-detail] vod info fetch start", `id=${movieId}`)
     try {
-      const r = await xtreamApiFetch("get_vod_info", { vod_id: String(movieId) })
+      const r = await xtreamApiFetch("get_vod_info", { vod_id: String(movieId) }, { entryId: detailPlaylistId })
       if (!r.ok) throw new Error(await r.text())
       const data = await r.json()
-      setCached(active._id, `vod_info_${movieId}`, data, VOD_INFO_TTL_MS)
+      setCached(detailPlaylistId, `vod_info_${movieId}`, data, VOD_INFO_TTL_MS)
       log.debug("[xt:movie-detail] vod info fetch end", `id=${movieId} ok=true ms=${Math.round(performance.now() - vodInfoFetchStartedAtMs)}`)
       if (enrichRequestIdForThisBoot === enrichRequestId) {
         applyVodInfo(data)
@@ -1703,6 +1715,11 @@ async function boot() {
   }
 }
 
-document.addEventListener("xt:active-changed", () => boot())
+document.addEventListener("xt:active-changed", () => {
+  if (!requestedPlaylistId) boot()
+})
+document.addEventListener("xt:entries-updated", async () => {
+  if (requestedPlaylistId && !(await getEntryById(requestedPlaylistId))) boot()
+})
 
 boot()

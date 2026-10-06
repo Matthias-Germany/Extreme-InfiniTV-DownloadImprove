@@ -15,6 +15,7 @@ export interface MirrorHopperOptions {
   isCurrent(): boolean
   logTag: string
   hopsUsed: number
+  entryId?: string
   /** Called once with the hopped URL and the new hop count when the hop succeeds. */
   onHop(url: string, hopsUsed: number): void
 }
@@ -27,7 +28,7 @@ export function createMirrorHopper(options: MirrorHopperOptions): (rejection: Mi
     hopPromise = (async () => {
       if (!options.buildUrl || !options.isCurrent()) return false
       const repin = shouldRepinMirror(rejection)
-      const nextUrl = await advanceMirror(options.buildUrl, { hopsUsed: options.hopsUsed, repin })
+      const nextUrl = await advanceMirror(options.buildUrl, { hopsUsed: options.hopsUsed, repin, entryId: options.entryId })
       if (!nextUrl || !options.isCurrent()) return false
       log.warn(`${options.logTag} provider rejection - hopping to next mirror`, { hop: options.hopsUsed + 1 })
       options.onHop(nextUrl, options.hopsUsed + 1)

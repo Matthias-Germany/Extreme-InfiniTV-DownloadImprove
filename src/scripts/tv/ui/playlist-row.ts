@@ -2,7 +2,7 @@
 
 import { navigate } from "astro:transitions/client"
 import { t } from "@/scripts/lib/i18n"
-import { selectEntry, removeEntry, getActiveEntry, entryToCreds } from "@/scripts/lib/creds.js"
+import { selectEntry, removeEntry, getActiveEntry, entryToCreds, setEntryMergedVisible } from "@/scripts/lib/creds.js"
 import { getNewestCacheTime } from "@/scripts/lib/cache.js"
 import { fmtAge } from "@/scripts/lib/format.ts"
 import { ICON_CHECK, ICON_DOTS, ICON_X } from "@/scripts/lib/icons"
@@ -67,9 +67,13 @@ function fmtCount(value: number | null): string {
 }
 
 /** One fact per row, matching the settings.health.* wording and tone rules used by the desktop health panel. */
-function buildHealthFacts(entry: any): ActionSheetFact[] {
+function buildHealthFacts(entry: any, isActive: boolean): ActionSheetFact[] {
   const health = getPlaylistHealth(entry._id)
   const facts: ActionSheetFact[] = []
+
+  if (isActive) {
+    facts.push({ label: t("tv.playlist.mergedFact"), value: t("tv.playlist.mergedAlways"), tone: "neutral" })
+  }
 
   if (health.account.status !== "unknown") {
     const tone =
@@ -255,6 +259,19 @@ function buildActions(opts: TvPlaylistRowOptions): ActionSheetItem[] {
     })
   }
 
+  if (!opts.isActive) {
+    const isMerged = !!entry.mergedVisible
+    actions.push({
+      label: t(isMerged ? "tv.playlist.mergedActionOn" : "tv.playlist.mergedActionOff"),
+      onSelect: () =>
+        void (async () => {
+          await setEntryMergedVisible(entry._id, !isMerged)
+          toastSuccess(t(isMerged ? "playlist.toast.mergedOff" : "playlist.toast.mergedOn", { title: entry.title }))
+          await onAfterChange(entry._id, "refresh")
+        })(),
+    })
+  }
+
   actions.push({
     label: t("common.edit"),
     onSelect: () => {
@@ -308,7 +325,16 @@ export function renderTvPlaylistRow(opts: TvPlaylistRowOptions): HTMLElement {
   secondaryEl.textContent = buildSecondaryText(entry)
 
   textWrap.append(titleEl, secondaryEl)
-  mainButton.append(badge, textWrap)
+  mainButton.append(badge)
+  if (entry.mergedVisible && !isActive) {
+    const mergedBadge = document.createElement("span")
+    mergedBadge.className =
+      "inline-flex h-6 shrink-0 items-center justify-center rounded-md px-2 text-label font-semibold uppercase tracking-wide ring-1 ring-accent/40 text-accent bg-accent-soft"
+    mergedBadge.textContent = t("tv.playlist.mergedBadge")
+    mainButton.append(mergedBadge)
+    row.dataset.tvRowMerged = "true"
+  }
+  mainButton.append(textWrap)
 
   if (isActive) {
     const check = document.createElement("span")
@@ -318,7 +344,7 @@ export function renderTvPlaylistRow(opts: TvPlaylistRowOptions): HTMLElement {
   }
 
   function openActionSheet(): void {
-    actionSheet.open(entry.title, buildActions(opts), { facts: buildHealthFacts(entry) })
+    actionSheet.open(entry.title, buildActions(opts), { facts: buildHealthFacts(entry, isActive) })
   }
 
   mainButton.addEventListener("click", async () => {

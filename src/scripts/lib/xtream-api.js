@@ -157,7 +157,7 @@ if (typeof document !== "undefined") {
   })
 }
 
-async function probeStreamUrl(url) {
+async function probeStreamUrl(url, dns) {
   if (typeof AbortController === "undefined") return true // no abort = skip the probe
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), STREAM_PROBE_TIMEOUT_MS)
@@ -167,6 +167,7 @@ async function probeStreamUrl(url) {
       headers: { Range: "bytes=0-0" },
       signal: controller.signal,
       logKind: "api",
+      dns,
     })
     const reachable = response.ok || response.status === 206
     // Live streams are endless; release the body so the probe doesn't hold a connection slot.
@@ -192,12 +193,12 @@ async function probeStreamUrl(url) {
  * @param {number} startOffset
  * @returns {Promise<{index:number,url:string}|null>}
  */
-async function probeCandidateRing(candidates, buildUrl, startIndex, startOffset) {
+async function probeCandidateRing(candidates, buildUrl, startIndex, startOffset, dns) {
   for (let offset = startOffset; offset < candidates.length; offset++) {
     const index = (startIndex + offset) % candidates.length
     const url = buildUrl(candidates[index])
     if (!url) continue
-    if (await probeStreamUrl(url)) return { index, url }
+    if (await probeStreamUrl(url, dns)) return { index, url }
   }
   return null
 }
@@ -226,7 +227,7 @@ export async function advanceMirror(buildUrl, { hopsUsed = 0, repin = true, entr
   if (hopsUsed >= candidates.length - 1) return null
 
   const startIndex = Math.min(getMirrorPin(entry._id), candidates.length - 1)
-  const found = await probeCandidateRing(candidates, buildUrl, startIndex, 1)
+  const found = await probeCandidateRing(candidates, buildUrl, startIndex, 1, getEntryDnsOverride(entry))
   if (!found) return null
 
   log.debug("[xt:xtream-api] mirror hop resolved", `from=${startIndex} to=${found.index}/${candidates.length} hopsUsed=${hopsUsed} repin=${repin}`)
@@ -277,7 +278,7 @@ export async function resolveStreamUrl(buildUrl, { entryId } = {}) {
     return buildUrl(candidates[startIndex])
   }
 
-  const found = await probeCandidateRing(candidates, buildUrl, startIndex, 0)
+  const found = await probeCandidateRing(candidates, buildUrl, startIndex, 0, getEntryDnsOverride(entry))
   if (!found) return buildUrl(candidates[startIndex])
 
   log.debug("[xt:xtream-api] stream mirror resolved", `index=${found.index}/${candidates.length} host=${candidates[found.index]?.host} changed=${found.index !== startIndex}`)

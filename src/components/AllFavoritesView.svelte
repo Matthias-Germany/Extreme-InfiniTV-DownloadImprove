@@ -2,9 +2,9 @@
   // Cross-playlist favorites view
   import { onMount } from "svelte"
   import { IconExternalLink } from "@tabler/icons-svelte"
-  import { log } from "@/scripts/lib/log.js"
   import { t, LOCALE_EVENT } from "@/scripts/lib/i18n.js"
-  import { getEntries, getActiveEntry, selectEntry } from "@/scripts/lib/creds.js"
+  import { getEntries, getActiveEntry } from "@/scripts/lib/creds.js"
+  import { detailHrefFor } from "@/scripts/lib/detail-href.ts"
   import {
     ensureLoaded as ensurePrefsLoaded,
     getAllGlobalFavorites,
@@ -50,10 +50,11 @@
     filter === "all" ? entries : entries.filter((row) => row.kind === filter)
   )
 
-  function buildHref(kind, id) {
-    if (kind === "live") return `/livetv?channel=${encodeURIComponent(id)}`
-    if (kind === "vod") return `/movies/detail?id=${encodeURIComponent(id)}`
-    return `/series/detail?id=${encodeURIComponent(id)}`
+  function buildHref(kind, id, playlistId) {
+    if (kind === "live") {
+      return `/livetv?channel=${encodeURIComponent(id)}&pl=${encodeURIComponent(playlistId)}`
+    }
+    return detailHrefFor(kind, id, { playlistId })
   }
 
   let reloadGeneration = 0
@@ -146,7 +147,7 @@
           id: Number(row.id),
           name,
           logo,
-          href: buildHref(row.kind, row.id),
+          href: buildHref(row.kind, row.id, row.playlistId),
           isCrossPlaylist: row.playlistId !== activePlaylistId,
           unavailable,
         }]
@@ -177,25 +178,12 @@
     }
   }
 
-  async function openEntry(entry) {
-    if (entry.isCrossPlaylist) {
-      try {
-        await selectEntry(entry.playlistId)
-      } catch (err) {
-        log.error("[xt:favorites] selectEntry failed:", err)
-      }
-    }
+  function openEntry(entry) {
     window.location.href = entry.href
   }
 
-  async function openCard(event, entry) {
-    if (entry.unavailable) {
-      event.preventDefault()
-      return
-    }
-    if (!entry.isCrossPlaylist) return
-    event.preventDefault()
-    await openEntry(entry)
+  function openCard(event, entry) {
+    if (entry.unavailable) event.preventDefault()
   }
 
   // Svelte action: right-click / long-press "Remove from favorites" menu.

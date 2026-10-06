@@ -7,6 +7,7 @@ import { log, redactUrl } from "@/scripts/lib/log.js"
 import { buildMovieStreamUrl, buildSeriesStreamUrl } from "@/scripts/lib/stream-urls.ts"
 import { getActivePlaylistIdSync, getConnectionLimitWarning } from "@/scripts/lib/account-info.js"
 import { getPlaylistDnsOverride } from "@/scripts/lib/creds.js"
+import { detailHrefFor } from "@/scripts/lib/detail-href.ts"
 import {
   isCastableSrc,
   buildVodCastDescriptor,
@@ -1326,7 +1327,7 @@ export function castXtreamVodToTv(params: CastXtreamVodParams): () => void {
       const dns = playlistId ? (await getPlaylistDnsOverride(playlistId))?.raw ?? null : null
       await playOnTv({
         contentTitle: params.title || null,
-        contentHref: params.contentHref ?? `/movies/detail?id=${params.vodId}`,
+        contentHref: params.contentHref ?? detailHrefFor("vod", params.vodId, { playlistId }),
         vodContext: playlistId ? { playlistId, vodId: String(params.vodId) } : undefined,
         buildDescriptor: () => {
           const src = buildMovieStreamUrl(params.creds, params.vodId, params.containerExt || null)

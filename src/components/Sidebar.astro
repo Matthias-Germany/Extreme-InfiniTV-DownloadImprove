@@ -538,10 +538,13 @@ const settingsActive = path === "/settings" || path.startsWith("/settings/")
   function maybeWarmup() {
     if (onLoginPage()) return
     import("@/scripts/lib/catalog.js")
-      .then((m) => m.warmupActive())
+      .then((m) => m.warmupMerged())
       .catch(() => {})
   }
   document.addEventListener("xt:active-changed", () => {
+    maybeWarmup()
+  })
+  document.addEventListener("xt:merged-changed", () => {
     maybeWarmup()
   })
 

@@ -2,7 +2,13 @@
 // filtering for small catalogs or when the worker is unavailable/broken, and drops
 // replies superseded by a newer request for the same catalog.
 
-import { filterAndSortIndexes, type GridFilterEntry, type GridFilterState } from "@/scripts/lib/tv-grid-filter"
+import {
+  filterAndSortIndexes,
+  gridCategoryMatcher,
+  gridWatchedMatcher,
+  type GridFilterEntry,
+  type GridFilterState,
+} from "@/scripts/lib/tv-grid-filter"
 import { normalize, parseSearchQuery, scoreNormMatch } from "@/scripts/lib/text.ts"
 import { log } from "@/scripts/lib/log.js"
 import { effectTier } from "@/scripts/tv/motion"
@@ -14,38 +20,28 @@ const IDLE_RELEASE_MS = 60_000
 
 export interface CatalogFilterCategoryParams {
   isGenreCategory: boolean
-  genreMatchIds?: Array<number | string>
+  genreMatchKeys?: string[]
   uncategorizedLabel: string
 }
 
 export interface CatalogFilterParams {
   state: GridFilterState
   category: CatalogFilterCategoryParams
-  watchedIds?: Array<number | string>
+  watchedKeys?: string[]
 }
 
 interface WorkerCatalogEntry extends GridFilterEntry {
   category?: string | null
 }
 
-function categoryMatcherFor(params: CatalogFilterCategoryParams) {
-  const genreMatchIds = params.genreMatchIds ? new Set(params.genreMatchIds.map(Number)) : null
-  return (entry: WorkerCatalogEntry, category: string): boolean => {
-    if (category.startsWith(GENRE_CAT_PREFIX)) return genreMatchIds?.has(Number(entry.id)) ?? false
-    const name = String(entry.category || "").trim() || params.uncategorizedLabel
-    return name === category
-  }
-}
-
-function isWatchedFor(watchedIds?: Array<number | string>) {
-  const watchedSet = watchedIds ? new Set(watchedIds) : null
-  return (entry: WorkerCatalogEntry): boolean => !!watchedSet?.has(entry.id)
-}
-
 function filterSync<T extends WorkerCatalogEntry>(entries: T[], params: CatalogFilterParams): Uint32Array {
   return filterAndSortIndexes(entries, params.state, {
-    categoryMatcher: categoryMatcherFor(params.category),
-    isWatched: isWatchedFor(params.watchedIds),
+    categoryMatcher: gridCategoryMatcher<WorkerCatalogEntry>({
+      genrePrefix: GENRE_CAT_PREFIX,
+      genreMatchKeys: params.category.genreMatchKeys,
+      uncategorizedLabel: params.category.uncategorizedLabel,
+    }),
+    isWatched: gridWatchedMatcher<WorkerCatalogEntry>(params.watchedKeys),
     normalize,
   })
 }
@@ -183,9 +179,9 @@ export async function filterCatalog<T extends WorkerCatalogEntry>(
     hideWatched: params.state.hideWatched,
     sort: params.state.sort,
     isGenreCategory: params.category.isGenreCategory,
-    genreMatchIds: params.category.genreMatchIds,
+    genreMatchKeys: params.category.genreMatchKeys,
     uncategorizedLabel: params.category.uncategorizedLabel,
-    watchedIds: params.watchedIds,
+    watchedKeys: params.watchedKeys,
   }
 
   return new Promise<Uint32Array | null>((resolve) => {

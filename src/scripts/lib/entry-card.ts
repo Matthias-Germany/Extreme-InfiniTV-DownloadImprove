@@ -99,6 +99,7 @@ export type EntryKind = "vod" | "series"
 
 export interface EntryLike {
   id: string | number
+  playlistId?: string
   name?: string | null
   logo?: string | null
   rating?: unknown
@@ -113,8 +114,8 @@ export interface BuildEntryCardOptions<T extends EntryLike> {
   idx: number
   /** Which favorite/watchlist namespace to use. */
   kind: EntryKind
-  /** Active playlist id - empty string disables the favorite toggle. */
-  activePlaylistId: string
+  /** Playlist the entry belongs to - empty string disables the favorite toggle. */
+  playlistId: string
   /** Builds the detail-page href for this entry. */
   detailHref: (entry: T) => string
   /** Title shown when the entry has no name. */
@@ -164,7 +165,7 @@ export function buildEntryCard<T extends EntryLike>(
     entry,
     idx,
     kind,
-    activePlaylistId,
+    playlistId,
     detailHref,
     fallbackTitle,
     metaText,
@@ -261,10 +262,10 @@ export function buildEntryCard<T extends EntryLike>(
   // watchlist bookmark so the bookmark stays in the top-left corner.
   if (decoratePoster) decoratePoster(posterWrap, entry)
 
-  const onWatchlist = activePlaylistId
+  const onWatchlist = playlistId
     ? watchlistState
       ? watchlistState(entry)
-      : isOnWatchlist(activePlaylistId, kind, entry.id)
+      : isOnWatchlist(playlistId, kind, entry.id)
     : false
   const watchBadge = document.createElement("span")
   watchBadge.dataset.role = "watch-badge"
@@ -295,10 +296,10 @@ export function buildEntryCard<T extends EntryLike>(
   card.appendChild(link)
 
   const getCurrentlyFavorited = (): boolean =>
-    activePlaylistId
+    playlistId
       ? favoriteState
         ? favoriteState(entry)
-        : isFavorite(activePlaylistId, kind, entry.id)
+        : isFavorite(playlistId, kind, entry.id)
       : false
   const fav = getCurrentlyFavorited()
   const starBtn = document.createElement("button")
@@ -319,14 +320,14 @@ export function buildEntryCard<T extends EntryLike>(
   starBtn.addEventListener("click", (e) => {
     e.stopPropagation()
     e.preventDefault()
-    if (!activePlaylistId) return
+    if (!playlistId) return
     // Re-check state at click time; a prior toggle only patches the DOM, not this closure.
     const currentlyFavorited = getCurrentlyFavorited()
     if (onToggleFavorite) {
       onToggleFavorite(entry, currentlyFavorited)
       return
     }
-    toggleFavorite(activePlaylistId, kind, entry.id, {
+    toggleFavorite(playlistId, kind, entry.id, {
       name: entry.name || "",
       logo: entry.logo || null,
     })

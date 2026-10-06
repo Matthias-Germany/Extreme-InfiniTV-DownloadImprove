@@ -579,8 +579,9 @@ import {
 	import "../scripts/updater-startup.js";
 	import { log } from "@/scripts/lib/log.js";
 	import { t } from "@/scripts/lib/i18n.js";
-	import { getEntries, getActiveEntry, loadCreds } from "@/scripts/lib/creds.js";
-	import { getCached, hydrate as hydrateCache } from "@/scripts/lib/cache.js";
+	import { getEntries, getActiveEntry, getMergedEntries, loadCreds } from "@/scripts/lib/creds.js";
+	import { hydrate as hydrateCache } from "@/scripts/lib/cache.js";
+	import { hydrateMergedRows, readMergedRows } from "@/scripts/lib/merged-catalog.ts";
 	import { readCachedLiveChannels } from "@/scripts/lib/live-catalog.ts";
 	import { getRecents, ensureLoaded as ensurePrefsLoaded } from "@/scripts/lib/preferences.js";
 	import { getProgrammesSync, getNowNextForChannel, loadProgrammes } from "@/scripts/lib/epg-data.js";
@@ -616,7 +617,7 @@ import {
 	let marquee = null;
 	let marqueeGeneration = 0;
 
-	async function setupMarquee(playlistId) {
+	async function setupMarquee(playlistIds, activePlaylistId) {
 		const section = document.getElementById("hub-marquee");
 		if (!section) return;
 		const generation = ++marqueeGeneration;
@@ -626,9 +627,9 @@ import {
 			const { buildMarqueePool, mountMarquee, showMarqueeSkeleton } =
 				await import("@/scripts/hub/marquee.ts");
 			if (generation === marqueeGeneration) showMarqueeSkeleton(section);
-			const pool = await buildMarqueePool(playlistId);
+			const pool = await buildMarqueePool(playlistIds, activePlaylistId);
 			if (generation !== marqueeGeneration) return;
-			marquee = mountMarquee(section, playlistId, pool);
+			marquee = mountMarquee(section, pool);
 		} catch (err) {
 			log.warn("[hub] marquee failed:", err);
 		}
@@ -688,30 +689,32 @@ import {
 			stopRotator();
 			const active = await getActiveEntry();
 			if (!active) return;
+			const mergedEntries = await getMergedEntries();
+			const mergedIds = mergedEntries.map((entry) => entry._id);
 			await Promise.all([
-				hydrateCache(active._id, "vod").catch(() => {}),
-				hydrateCache(active._id, "series").catch(() => {}),
+				hydrateMergedRows("vod"),
+				hydrateMergedRows("series"),
 				hydrateCache(active._id, "live").catch(() => {}),
 				hydrateCache(active._id, "m3u").catch(() => {}),
 			]);
 			if (moviesTileArt) {
-				const vod = (getCached(active._id, "vod")?.data || [])
-					.filter((m) => m && m.logo)
+				const vod = readMergedRows("vod")
+					.rows.filter((m) => m && m.logo)
 					.map((m) => m.logo);
 				const picks = pickRandom(vod, 6);
 				moviesTileArt.replaceChildren();
 				if (picks.length) startRotator(moviesTileArt, picks);
 			}
 			if (seriesTileArt) {
-				const series = (getCached(active._id, "series")?.data || [])
-					.filter((s) => s && s.logo)
+				const series = readMergedRows("series")
+					.rows.filter((s) => s && s.logo)
 					.map((s) => s.logo);
 				const picks = pickRandom(series, 6);
 				seriesTileArt.replaceChildren();
 				if (picks.length) startRotator(seriesTileArt, picks);
 			}
 			await setupLiveSignals(active);
-			await setupMarquee(active._id);
+			await setupMarquee(mergedIds, active._id);
 		} catch (e) {
 			log.warn("[hub] setupTileArt failed:", e);
 		}
@@ -788,8 +791,8 @@ import {
 
 	async function setupMarqueeEarly() {
 		try {
-			const active = await getActiveEntry();
-			if (active) await setupMarquee(active._id);
+			const [active, mergedEntries] = await Promise.all([getActiveEntry(), getMergedEntries()]);
+			if (active) await setupMarquee(mergedEntries.map((entry) => entry._id), active._id);
 		} catch (err) {
 			log.warn("[hub] early marquee failed:", err);
 		}
@@ -805,6 +808,7 @@ import {
 			? window.requestIdleCallback(setupTileArt, { timeout: 1500 })
 			: setTimeout(setupTileArt, 400);
 		document.addEventListener("xt:active-changed", setupTileArt);
+		document.addEventListener("xt:merged-changed", setupTileArt);
 		document.addEventListener("xt:catalog-warmed", setupTileArt);
 		document.addEventListener("xt:cache-revalidated", rebuild);
 		document.addEventListener("xt:catalog-warming-progress", rebuild);

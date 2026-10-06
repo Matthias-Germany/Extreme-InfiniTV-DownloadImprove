@@ -3,7 +3,7 @@
 
 import { getCached, setCached, hydrate } from "@/scripts/lib/cache.js"
 import { xtreamApiFetch } from "@/scripts/lib/xtream-api.js"
-import { getActiveEntry } from "@/scripts/lib/creds.js"
+import { getEntryById } from "@/scripts/lib/creds.js"
 import { isAbortLikeError } from "@/scripts/lib/provider-fetch.js"
 import { log } from "@/scripts/lib/log.js"
 
@@ -74,6 +74,7 @@ function jobKey(playlistId: string, movieId: string | number): string {
 
 if (typeof document !== "undefined") {
   document.addEventListener("xt:active-changed", () => _failed.clear())
+  document.addEventListener("xt:merged-changed", () => _failed.clear())
 }
 
 function pump(): void {
@@ -87,10 +88,9 @@ function pump(): void {
   }
 }
 
-async function isActivePlaylist(playlistId: string): Promise<boolean> {
+async function playlistExists(playlistId: string): Promise<boolean> {
   try {
-    const entry = await getActiveEntry()
-    return !!entry && entry._id === playlistId
+    return !!(await getEntryById(playlistId))
   } catch {
     return false
   }
@@ -98,10 +98,10 @@ async function isActivePlaylist(playlistId: string): Promise<boolean> {
 
 async function fetchVodInfo(playlistId: string, movieId: string | number, signal?: AbortSignal): Promise<any | null> {
   try {
-    const response = await xtreamApiFetch("get_vod_info", { vod_id: String(movieId) }, { signal })
+    const response = await xtreamApiFetch("get_vod_info", { vod_id: String(movieId) }, { signal, entryId: playlistId })
     if (!response.ok) throw new Error(`get_vod_info ${response.status}`)
     const data = await response.json()
-    if (!(await isActivePlaylist(playlistId))) return null
+    if (!(await playlistExists(playlistId))) return null
     setCached(playlistId, vodInfoKind(movieId), data, VOD_INFO_TTL_MS)
     return data
   } catch (err) {
@@ -154,7 +154,7 @@ export function requestVodInfo(
 
   const promise = new Promise<any | null>((resolve) => {
     _queue.push(async () => {
-      if (!(await isActivePlaylist(playlistId))) {
+      if (!(await playlistExists(playlistId))) {
         resolve(null)
         return
       }

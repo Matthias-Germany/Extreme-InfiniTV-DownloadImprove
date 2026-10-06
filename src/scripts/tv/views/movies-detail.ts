@@ -2,7 +2,8 @@
 
 import { nextPaint, markLastOpenedEntry, type TvView, type TvViewContext } from "@/scripts/tv/router"
 import { t, LOCALE_EVENT, getActiveLocale } from "@/scripts/lib/i18n"
-import { getActiveEntry, loadCreds } from "@/scripts/lib/creds.js"
+import { getActiveEntry, getEntryById, entryToCreds } from "@/scripts/lib/creds.js"
+import { detailHrefFor, readDetailPlaylistParam } from "@/scripts/lib/detail-href.ts"
 import { getCached, setCached, hydrate as hydrateCache } from "@/scripts/lib/cache.js"
 import { ensureVod } from "@/scripts/lib/catalog.js"
 import { xtreamApiFetch } from "@/scripts/lib/xtream-api.js"
@@ -136,11 +137,12 @@ function categoryBucket(catalog: CatalogRow[], category: string): CatalogRow[] {
 const view: TvView = {
   prepaint(root: HTMLElement, url: URL): boolean {
     const movieId = Number(url.searchParams.get("id") || "0")
-    if (!movieId || !lastKnownPlaylistId) return false
-    const cachedCatalog = (getCached(lastKnownPlaylistId, "vod")?.data || []) as CatalogRow[]
+    const prepaintPlaylistId = readDetailPlaylistParam(url.search) || lastKnownPlaylistId
+    if (!movieId || !prepaintPlaylistId) return false
+    const cachedCatalog = (getCached(prepaintPlaylistId, "vod")?.data || []) as CatalogRow[]
     const catalogRow = cachedCatalog.find((row) => Number(row.id) === movieId)
     if (!catalogRow) return false
-    markLastOpenedEntry({ kind: "vod", id: movieId })
+    markLastOpenedEntry({ kind: "vod", id: movieId, playlistId: prepaintPlaylistId })
     const chrome = createDetailChrome(root)
     chrome.setSkeleton(false)
     chrome.setHero(stubHero(catalogRow))
@@ -149,6 +151,7 @@ const view: TvView = {
   mount(root: HTMLElement, ctx: TvViewContext) {
     const movieId = Number(ctx.url.searchParams.get("id") || "0")
     const wantsAutoplay = ctx.url.searchParams.get("autoplay") === "1"
+    const requestedPlaylistId = readDetailPlaylistParam(ctx.url.search)
 
     const chrome = createDetailChrome(root)
 
@@ -479,7 +482,10 @@ const view: TvView = {
         kind: "vod",
         id: row.id,
         name: row.name,
-        href: `/tv/movies/detail?id=${encodeURIComponent(String(row.id))}`,
+        href: detailHrefFor("vod", row.id, {
+          tv: true,
+          playlistId: requestedPlaylistId ? activePlaylistId : undefined,
+        }),
         posterUrl: row.logo,
         meta: formatCardMeta(row.year, row.rating),
         ariaLabel: t("tv.aria.open", { name: row.name }),
@@ -541,9 +547,7 @@ const view: TvView = {
         })
         return
       }
-      markLastOpenedEntry({ kind: "vod", id: movieId })
-
-      const active = await getActiveEntry()
+      const active = (requestedPlaylistId && (await getEntryById(requestedPlaylistId))) || (await getActiveEntry())
       if (destroyed) return
       if (!active) {
         chrome.setSkeleton(false)
@@ -560,8 +564,9 @@ const view: TvView = {
 
       activePlaylistId = active._id
       lastKnownPlaylistId = activePlaylistId
+      markLastOpenedEntry({ kind: "vod", id: movieId, playlistId: activePlaylistId })
       await ensurePrefsLoaded()
-      creds = await loadCreds()
+      creds = entryToCreds(active)
       if (destroyed) return
 
       const cachedCatalog = (getCached(activePlaylistId, "vod")?.data || []) as CatalogRow[]
@@ -610,7 +615,7 @@ const view: TvView = {
           const response = await xtreamApiFetch(
             "get_vod_info",
             { vod_id: String(movieId) },
-            { signal: abortController.signal }
+            { signal: abortController.signal, entryId: activePlaylistId }
           )
           if (!response.ok) throw new Error(await response.text())
           const data = await response.json()

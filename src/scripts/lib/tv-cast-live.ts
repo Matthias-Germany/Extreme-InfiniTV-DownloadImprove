@@ -125,7 +125,7 @@ export async function castLiveChannel(
       options.liveContext ??
       resolveTunedLiveContext(session.liveContext, playlistId, id, options.groupChannelIds || [id])
     await castPlay(sessionAsDevice(session), resolved.descriptor, { liveContext })
-    updateCastSession({ contentHref: `/livetv?channel=${id}` })
+    updateCastSession({ contentHref: `/livetv?channel=${id}&pl=${playlistId}` })
     return true
   } catch (err) {
     log.warn("[xt:tv-cast-live] castLiveChannel failed:", err)

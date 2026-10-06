@@ -72,6 +72,7 @@ export function nextPaint(): Promise<void> {
 export interface OpenedEntryMark {
   kind: string
   id: string | number
+  playlistId?: string
 }
 
 // Set by a detail view when it opens; consumed once by the list view it returns to,

@@ -1,7 +1,13 @@
 // Runs the TV movies/series catalog filter+sort off the main thread; keeps the
 // posted catalog resident so only the small filter params cross per request.
 
-import { filterAndSortIndexes, type GridFilterEntry, type GridFilterState } from "@/scripts/lib/tv-grid-filter"
+import {
+  filterAndSortIndexes,
+  gridCategoryMatcher,
+  gridWatchedMatcher,
+  type GridFilterEntry,
+  type GridFilterState,
+} from "@/scripts/lib/tv-grid-filter"
 import { normalize, parseSearchQuery, scoreNormMatch } from "@/scripts/lib/text.ts"
 import { isTrustedWorkerMessage } from "@/scripts/lib/worker-origin.ts"
 
@@ -19,9 +25,9 @@ export interface CatalogFilterWorkerParams {
   hideWatched: boolean
   sort: string
   isGenreCategory: boolean
-  genreMatchIds?: Array<number | string>
+  genreMatchKeys?: string[]
   uncategorizedLabel: string
-  watchedIds?: Array<number | string>
+  watchedKeys?: string[]
 }
 
 interface CatalogMessage {
@@ -66,20 +72,6 @@ function storeCatalog(catalogId: string, entries: WorkerCatalogEntry[]): void {
   }
 }
 
-function categoryMatcherFor(params: CatalogFilterWorkerParams) {
-  const genreMatchIds = params.genreMatchIds ? new Set(params.genreMatchIds.map(Number)) : null
-  return (entry: WorkerCatalogEntry, category: string): boolean => {
-    if (category.startsWith(GENRE_CAT_PREFIX)) return genreMatchIds?.has(Number(entry.id)) ?? false
-    const name = String(entry.category || "").trim() || params.uncategorizedLabel
-    return name === category
-  }
-}
-
-function isWatchedFor(watchedIds?: Array<number | string>) {
-  const watchedSet = watchedIds ? new Set(watchedIds) : null
-  return (entry: WorkerCatalogEntry): boolean => !!watchedSet?.has(entry.id)
-}
-
 const post = (message: CatalogFilterWorkerResponse): void =>
   (self as unknown as Worker).postMessage(message, [message.indexes.buffer])
 
@@ -115,8 +107,12 @@ self.addEventListener("message", (event: MessageEvent<IncomingMessage>) => {
     sort: message.params.sort,
   }
   const indexes = filterAndSortIndexes(entries, state, {
-    categoryMatcher: categoryMatcherFor(message.params),
-    isWatched: isWatchedFor(message.params.watchedIds),
+    categoryMatcher: gridCategoryMatcher<WorkerCatalogEntry>({
+      genrePrefix: GENRE_CAT_PREFIX,
+      genreMatchKeys: message.params.genreMatchKeys,
+      uncategorizedLabel: message.params.uncategorizedLabel,
+    }),
+    isWatched: gridWatchedMatcher<WorkerCatalogEntry>(message.params.watchedKeys),
     normalize,
   })
   post({ requestId: message.requestId, indexes })

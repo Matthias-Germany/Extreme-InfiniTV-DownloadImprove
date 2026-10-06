@@ -9,6 +9,8 @@ vi.mock("@/scripts/lib/creds.js", () => ({
   fmtBase: () => "",
   isTauri: false,
   getEntries: async () => [],
+  getEntryById: async () => null,
+  getActiveEntry: async () => null,
   loadCreds: async () => ({ host: "", port: "", user: "", pass: "", liveContainer: "m3u8" }),
   entryToCreds: () => ({ host: "", port: "", user: "", pass: "", liveContainer: "m3u8" }),
   getMirrorPin: () => 0,

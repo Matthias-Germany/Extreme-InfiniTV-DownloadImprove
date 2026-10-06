@@ -7,9 +7,11 @@ import { parseNamePrefix } from "@/scripts/lib/language-tags.ts"
 import { STAR_OUTLINE, STAR_FILLED } from "@/scripts/lib/entry-card.ts"
 import { motionAllowed, TV_EASE, effectTier, heavyBlurClass } from "@/scripts/tv/motion"
 import type { CastChannel, CastChannelGroup } from "@/scripts/lib/tv-cast-channel-list"
+import { MERGED_CATEGORY_SEPARATOR } from "@/scripts/lib/merged-catalog-core.ts"
 
 export interface LiveChannel extends CastChannel, CatchupCapableChannel {
   tvgShift?: number | null
+  playlistId?: string
 }
 
 export type GuideStatus = "loading" | "empty" | "ready"
@@ -89,7 +91,7 @@ function buildLogoChip(logoUrl: string | null | undefined, widthClass: string, f
 export function buildGroupButton(group: CastChannelGroup, isActive: boolean): HTMLButtonElement {
   const button = document.createElement("button")
   button.type = "button"
-  button.dataset.focusKey = `group:${group.key}`
+  button.dataset.focusKey = `group:${group.key.replace(MERGED_CATEGORY_SEPARATOR, ":")}`
   button.dataset.groupKey = group.key
   button.dataset.active = isActive ? "true" : "false"
   button.className =
@@ -140,16 +142,22 @@ export function buildChannelHeaderRow(channel: LiveChannel): HTMLDivElement {
   return row
 }
 
-export function buildChannelRow(channel: LiveChannel, index: number, isPlaying: boolean, favorite: boolean): HTMLButtonElement {
+export function buildChannelRow(
+  channel: LiveChannel,
+  index: number,
+  isPlaying: boolean,
+  favorite: boolean,
+  channelKey: string = String(channel.id)
+): HTMLButtonElement {
   const row = document.createElement("button")
   row.type = "button"
   row.className =
     "group/row relative grid min-h-[4rem] w-full grid-cols-[2rem_5rem_minmax(0,1fr)] items-center gap-3 " +
     "rounded-2xl bg-transparent px-3 py-2 text-start outline-none hover:bg-surface tv-focus-inset " +
     "data-[now-playing=true]:bg-surface"
-  row.dataset.focusKey = `ch:${channel.id}`
+  row.dataset.focusKey = `ch:${channelKey}`
   row.dataset.channelId = String(channel.id)
-  row.dataset.channelKey = String(channel.id)
+  row.dataset.channelKey = channelKey
   if (isPlaying) row.dataset.nowPlaying = "true"
   if (channel.unresolved) {
     row.dataset.unresolved = "true"

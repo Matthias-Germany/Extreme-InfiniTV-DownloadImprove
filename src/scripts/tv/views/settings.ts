@@ -4,7 +4,7 @@ import { navigate } from "astro:transitions/client"
 import { t, LOCALE_EVENT, getActiveLocale, getAvailableLocales, setLocale } from "@/scripts/lib/i18n"
 import { registerFocusSection, keepFocusedInView, remPx } from "@/scripts/tv/focus"
 import { applyRootFontSizePx } from "@/scripts/tv/root-font-size"
-import { getEntries, getActiveEntry, loadCreds, isLocalM3UHost, isCustomHost, isTauri } from "@/scripts/lib/creds.js"
+import { getEntries, getActiveEntry, getMergedEntries, loadCreds, isLocalM3UHost, isCustomHost, isTauri } from "@/scripts/lib/creds.js"
 import { getPlaylistListEmptyCopy } from "@/scripts/lib/playlist-rows.js"
 import { getUiMode, setUiMode, type UiMode } from "@/scripts/lib/ui-mode"
 import { classicRouteFor } from "@/scripts/lib/tv-routes"
@@ -243,6 +243,7 @@ const view: TvView = {
     async function renderRows(): Promise<void> {
       if (state.destroyed || !list) return
       const activeEntry = await getActiveEntry()
+      const mergedEntries = await getMergedEntries()
       if (state.destroyed || !list) return
       state.playlistId = activeEntry?._id || ""
 
@@ -252,7 +253,10 @@ const view: TvView = {
         id: "playlists",
         icon: ICON_LIST_DETAILS,
         label: t("tv.settings.playlists"),
-        value: activeEntry?.title || t("list.noPlaylistSelected"),
+        value:
+          activeEntry && mergedEntries.length > 1
+            ? t("tv.settings.playlistsMergedValue", { title: activeEntry.title, count: mergedEntries.length - 1 })
+            : activeEntry?.title || t("list.noPlaylistSelected"),
         kind: "action",
         onActivate: () => void openPlaylistsDialog(),
       })

@@ -211,6 +211,7 @@ const navStructure: NavSection[] = [
           class="flex flex-col divide-y divide-line/60 rounded-xl border border-line bg-bg overflow-hidden">
           <div data-i18n="settings.playlists.empty" class="px-4 py-4 text-xs text-fg-3">No playlists yet.</div>
         </div>
+        <p id="settings-playlists-merged-hint" data-i18n="settings.playlists.mergedHint" class="hidden text-2xs text-fg-3 -mt-1">Playlists marked for the merged view appear together with the active playlist in Live TV, Movies and Series.</p>
         <div class="grid grid-cols-1 sm:grid-cols-2 gap-2 pt-1">
           <a href="/login" class="btn justify-start sm:justify-center">
             <IconPlus aria-hidden="true" class="btn-icon" />
@@ -2744,6 +2745,7 @@ const navStructure: NavSection[] = [
     }
 
     const playlistsEl = document.getElementById("settings-playlists-list")
+    const mergedHintEl = document.getElementById("settings-playlists-merged-hint")
     const refreshBtn = /** @type {HTMLButtonElement|null} */ (document.getElementById("settings-refresh-active"))
     const addFromWebsiteBtn = /** @type {HTMLButtonElement|null} */ (document.getElementById("settings-add-from-website"))
     if (snifferAvailable) addFromWebsiteBtn?.classList.remove("hidden")
@@ -2895,6 +2897,8 @@ const navStructure: NavSection[] = [
         getEntries(),
         getActiveEntry(),
       ])
+
+      mergedHintEl?.classList.toggle("hidden", entries.length < 2)
 
       if (!entries.length) {
         playlistsEl.innerHTML = `<div class="px-4 py-4 text-xs text-fg-3">${getPlaylistListEmptyCopy()}</div>`

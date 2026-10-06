@@ -25,7 +25,7 @@ interface OverlayMemoEntry {
 }
 
 // Same source array + revision returns the same result array, so identity memos downstream hold.
-const overlayMemo = new WeakMap<any[], OverlayMemoEntry>()
+const overlayMemo = new WeakMap<any[], { visible?: OverlayMemoEntry; all?: OverlayMemoEntry }>()
 
 /**
  * Overlays the user's per-channel edits onto a provider catalog. The cache keeps
@@ -43,7 +43,9 @@ export function applyLiveOverrides(
   if (!Array.isArray(channels)) return channels
   const includeHidden = !!options.includeHidden
   const revision = getChannelOverridesRevision()
-  const memoized = overlayMemo.get(channels)
+  const slot = includeHidden ? "all" : "visible"
+  const memoSlots = overlayMemo.get(channels)
+  const memoized = memoSlots?.[slot]
   if (
     memoized &&
     memoized.revision === revision &&
@@ -58,7 +60,10 @@ export function applyLiveOverrides(
       isM3U,
       includeHidden,
     })
-    overlayMemo.set(channels, { revision, playlistId, isM3U, includeHidden, result })
+    overlayMemo.set(channels, {
+      ...memoSlots,
+      [slot]: { revision, playlistId, isM3U, includeHidden, result },
+    })
     return result
   } catch (overrideError) {
     log.warn("[xt:catalog] channel overrides skipped:", overrideError)

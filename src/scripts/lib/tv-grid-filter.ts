@@ -12,11 +12,39 @@ export interface GridFilterState {
 
 export interface GridFilterEntry {
   id: number | string
+  key?: string
   name?: string | null
   norm?: string
   added?: number
   rating?: unknown
   year?: string | number | null
+}
+
+/** Row identity across playlists: the entry's own key when merged, else its id. */
+export function gridEntryKey(entry: { id: number | string; key?: string }): string {
+  return entry.key ?? String(entry.id)
+}
+
+export interface GridCategoryParams {
+  genrePrefix: string
+  genreMatchKeys?: string[]
+  uncategorizedLabel: string
+}
+
+export function gridCategoryMatcher<T extends GridFilterEntry & { category?: string | null }>(
+  params: GridCategoryParams
+): (entry: T, category: string) => boolean {
+  const genreMatchKeys = params.genreMatchKeys ? new Set(params.genreMatchKeys) : null
+  return (entry, category) => {
+    if (category.startsWith(params.genrePrefix)) return genreMatchKeys?.has(gridEntryKey(entry)) ?? false
+    const name = String(entry.category || "").trim() || params.uncategorizedLabel
+    return name === category
+  }
+}
+
+export function gridWatchedMatcher<T extends GridFilterEntry>(watchedKeys?: string[]): (entry: T) => boolean {
+  const watchedSet = watchedKeys ? new Set(watchedKeys) : null
+  return (entry) => !!watchedSet?.has(gridEntryKey(entry))
 }
 
 export interface GridFilterContext<T> {

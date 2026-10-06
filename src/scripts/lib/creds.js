@@ -36,6 +36,9 @@
 // playlist's provider/M3U/EPG requests, stored as the normalizeDnsInput()
 // canonical string; entry overrides the global default (app-settings.js).
 //
+// `mergedVisible` (optional, every type) flags the playlist for the merged
+// catalog view (active playlist + every flagged entry); absent when unset.
+//
 // Tauri builds persist via @tauri-apps/plugin-store; web/SSR via localStorage
 // + cookies. Old "xt_host" / "xt_port" / "xt_user" / "xt_pass" keys are
 // auto-migrated into one entry on first read.
@@ -53,6 +56,8 @@ const STORAGE_KEY = "xt_playlists"
 const LEGACY_KEYS = ["host", "port", "user", "pass"]
 const EVT_ACTIVE_CHANGED = "xt:active-changed"
 const EVT_ENTRIES_UPDATED = "xt:entries-updated"
+export const EVT_MERGED_CHANGED = "xt:merged-changed"
+export const MERGED_CHANGED_EVENT = EVT_MERGED_CHANGED
 export const LOCAL_M3U_SCHEME = "xt-local://"
 export const CUSTOM_PLAYLIST_SCHEME = "xt-custom://"
 
@@ -144,6 +149,7 @@ const mirrorPin = new Map()
 // Sync mirror of the active entry, kept fresh by getActiveEntry() reads and
 // the xt:active-changed event, so getActiveDnsOverride() can stay sync.
 let cachedActiveEntry = null
+let cachedMergedEntries = []
 
 /** Mirror-aware candidate list for an xtream entry: primary first, then mirrors.
  *  Returns flat {host, port, user, pass, liveContainer} shape each. Empty for non-xtream. */
@@ -417,6 +423,52 @@ export async function getActiveEntry() {
   return active
 }
 
+export function selectMergedEntries(entries, selectedId) {
+  return entries.filter((entry) => entry._id === selectedId || !!entry.mergedVisible)
+}
+
+export async function getMergedEntries() {
+  const state = await getState()
+  cachedMergedEntries = selectMergedEntries(state.entries, state.selectedId)
+  return cachedMergedEntries
+}
+
+export async function getMergedPlaylistIds() {
+  return (await getMergedEntries()).map((entry) => entry._id)
+}
+
+export async function isMergedMode() {
+  return (await getMergedEntries()).length >= 2
+}
+
+export function getMergedEntriesSync() {
+  return cachedMergedEntries
+}
+
+export function getMergedPlaylistIdsSync() {
+  return cachedMergedEntries.map((entry) => entry._id)
+}
+
+export function isMergedModeSync() {
+  return cachedMergedEntries.length >= 2
+}
+
+export async function setEntryMergedVisible(id, visible) {
+  const state = await getState()
+  if (!state.entries.some((entry) => entry._id === id)) return
+  const mergedVisible = !!visible
+  const entries = state.entries.map((entry) => {
+    if (entry._id !== id) return entry
+    const next = { ...entry }
+    if (mergedVisible) next.mergedVisible = true
+    else delete next.mergedVisible
+    return next
+  })
+  await writeRaw({ ...state, entries })
+  dispatch(EVT_ENTRIES_UPDATED)
+  dispatch(EVT_MERGED_CHANGED, { entryId: id, mergedVisible })
+}
+
 /** Any stored entry by id, active or not. */
 export async function getEntryById(entryId) {
   if (!entryId) return null
@@ -457,6 +509,8 @@ export async function addEntry(partial) {
   if (!entry.emoji) delete entry.emoji
   entry.accent = sanitizeAccentOverride(entry.accent)
   if (!entry.accent) delete entry.accent
+  if (entry.mergedVisible) entry.mergedVisible = true
+  else delete entry.mergedVisible
   if (!entry.title) {
     entry.title =
       entry.type === "xtream"
@@ -551,6 +605,10 @@ export async function updateEntry(id, patch) {
       merged.accent = sanitizeAccentOverride(merged.accent)
       if (!merged.accent) delete merged.accent
     }
+    if ("mergedVisible" in merged) {
+      if (merged.mergedVisible) merged.mergedVisible = true
+      else delete merged.mergedVisible
+    }
     if (merged.type === "xtream" || (!patch?.type && e.type === "xtream")) {
       if ("mirrors" in merged) merged.mirrors = sanitizeMirrors(merged.mirrors)
       if ("liveContainer" in merged) {
@@ -622,10 +680,12 @@ function dispatch(name, detail) {
 if (typeof document !== "undefined") {
   document.addEventListener(EVT_ENTRIES_UPDATED, () => {
     mirrorPin.clear()
+    getMergedEntries().catch(() => {})
   })
   document.addEventListener(EVT_ACTIVE_CHANGED, (e) => {
     cachedActiveEntry = e.detail || null
     warmDnsProxyForActive()
+    getMergedEntries().catch(() => {})
   })
   let previousGlobalDns = getGlobalDns()
   document.addEventListener(DNS_EVENT, () => {
@@ -639,6 +699,7 @@ if (typeof document !== "undefined") {
     warmDnsProxyForActive()
   })
   getActiveEntry().then(warmDnsProxyForActive).catch(() => {})
+  getMergedEntries().catch(() => {})
 }
 
 // ---------------------------------------------------------------------------

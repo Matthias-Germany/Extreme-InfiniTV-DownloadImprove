@@ -3,7 +3,7 @@
 
 import { t } from "@/scripts/lib/i18n.js"
 import {
-  getContinueWatching,
+  getMergedContinueWatching,
   getRecents,
   getAllGlobalFavorites,
   ensureLoaded as ensurePrefsLoaded,
@@ -15,6 +15,8 @@ import { backdropFromInfoPayload } from "@/scripts/lib/backdrop.ts"
 import { peekTitleEnrichment } from "@/scripts/lib/enrichment.ts"
 import { requestVodInfo } from "@/scripts/lib/vod-info.ts"
 import { requestSeriesInfo } from "@/scripts/lib/series-seasons.ts"
+import { detailHrefFor } from "@/scripts/lib/detail-href.ts"
+import { rowKey } from "@/scripts/lib/merged-catalog-core.ts"
 import { ambientFor } from "@/scripts/tv/ambient-color"
 import { log } from "@/scripts/lib/log.js"
 
@@ -39,8 +41,10 @@ export interface MarqueeItem {
   artKind: "poster" | "logo"
   percent: number
   /** Present for catalogue titles, so a real backdrop can replace the poster. */
-  ref?: { kind: TitleKind; id: string | number }
+  ref?: { kind: TitleKind; id: string | number; playlistId: string }
 }
+
+type MarqueeRef = NonNullable<MarqueeItem["ref"]>
 
 interface CatalogRow {
   id?: string | number
@@ -95,13 +99,23 @@ function indexById(rows: CatalogRow[]): Map<number, CatalogRow> {
   return new Map(rows.map((row) => [Number(row.id), row]))
 }
 
-function continueWatchingItems(
-  playlistId: string,
-  vodById: Map<number, CatalogRow>,
+interface PlaylistCatalog {
+  vod: CatalogRow[]
+  vodById: Map<number, CatalogRow>
   seriesById: Map<number, CatalogRow>
+}
+
+function continueWatchingItems(
+  playlistIds: string[],
+  catalogs: Map<string, PlaylistCatalog>
 ): MarqueeItem[] {
   const out: MarqueeItem[] = []
-  for (const row of getContinueWatching(playlistId, 4) as ProgressRow[]) {
+  for (const row of getMergedContinueWatching(playlistIds, 4) as Array<
+    ProgressRow & { playlistId: string }
+  >) {
+    const playlistId = row.playlistId
+    const vodById = catalogs.get(playlistId)?.vodById ?? new Map<number, CatalogRow>()
+    const seriesById = catalogs.get(playlistId)?.seriesById ?? new Map<number, CatalogRow>()
     const percent =
       row.duration > 0 ? Math.max(0, Math.min(100, (row.position / row.duration) * 100)) : 0
     if (row.kind === "vod") {
@@ -109,19 +123,19 @@ function continueWatchingItems(
       const title = movie?.name || row.name
       if (!title) continue
       out.push({
-        key: `vod:${row.id}`,
+        key: `vod:${rowKey({ playlistId, id: row.id })}`,
         eyebrow: t("hub.strip.continueWatching"),
         title: cleanTitle(title),
         meta: timeLeft(row.position, row.duration) || metaFor(movie),
         rating: ratingFor(movie),
         hasProgress: row.duration > 0,
-        detailHref: `/movies/detail?id=${encodeURIComponent(String(row.id))}`,
-        ctaHref: `/movies/detail?id=${encodeURIComponent(String(row.id))}&autoplay=1`,
+        detailHref: detailHrefFor("vod", row.id, { playlistId }),
+        ctaHref: detailHrefFor("vod", row.id, { playlistId, autoplay: true }),
         ctaLabel: t("hub.marquee.resume"),
         artUrl: movie?.logo || null,
         artKind: "poster",
         percent,
-        ref: { kind: "vod", id: row.id },
+        ref: { kind: "vod", id: row.id, playlistId },
       })
       continue
     }
@@ -130,23 +144,21 @@ function continueWatchingItems(
     const episode = row.name && row.name !== title ? row.name : ""
     const series = row.seriesId ? seriesById.get(Number(row.seriesId)) : undefined
     out.push({
-      key: `episode:${row.id}`,
+      key: `episode:${rowKey({ playlistId, id: row.id })}`,
       eyebrow: t("hub.strip.continueWatching"),
       title: cleanTitle(title),
       meta: [episode, timeLeft(row.position, row.duration)].filter(Boolean).join(" · "),
       rating: ratingFor(series),
       hasProgress: row.duration > 0,
-      detailHref: row.seriesId
-        ? `/series/detail?id=${encodeURIComponent(String(row.seriesId))}`
-        : "/series",
+      detailHref: row.seriesId ? detailHrefFor("series", row.seriesId, { playlistId }) : "/series",
       ctaHref: row.seriesId
-        ? `/series/detail?id=${encodeURIComponent(String(row.seriesId))}&autoplay=1&episode=${encodeURIComponent(String(row.id))}`
+        ? detailHrefFor("series", row.seriesId, { playlistId, autoplay: true, episode: row.id })
         : "/series",
       ctaLabel: t("hub.marquee.resume"),
       artUrl: series?.logo || null,
       artKind: "poster",
       percent,
-      ref: row.seriesId ? { kind: "series", id: row.seriesId } : undefined,
+      ref: row.seriesId ? { kind: "series", id: row.seriesId, playlistId } : undefined,
     })
   }
   return out
@@ -161,14 +173,14 @@ function lastLiveItem(playlistId: string): MarqueeItem | null {
   const title = channel?.name || recent.name
   if (!title) return null
   return {
-    key: `live:${recent.id}`,
+    key: `live:${rowKey({ playlistId, id: recent.id })}`,
     eyebrow: t("nav.livetv"),
     title: cleanTitle(title),
     meta: "",
     rating: "",
     hasProgress: false,
-    detailHref: `/livetv?channel=${encodeURIComponent(String(recent.id))}`,
-    ctaHref: `/livetv?channel=${encodeURIComponent(String(recent.id))}`,
+    detailHref: `/livetv?channel=${encodeURIComponent(String(recent.id))}&pl=${encodeURIComponent(playlistId)}`,
+    ctaHref: `/livetv?channel=${encodeURIComponent(String(recent.id))}&pl=${encodeURIComponent(playlistId)}`,
     ctaLabel: t("hub.marquee.watch"),
     artUrl: channel?.logo || recent.logo || null,
     artKind: "logo",
@@ -177,54 +189,56 @@ function lastLiveItem(playlistId: string): MarqueeItem | null {
 }
 
 function favouriteItems(
-  playlistId: string,
-  vodById: Map<number, CatalogRow>,
-  seriesById: Map<number, CatalogRow>
+  playlistIds: string[],
+  catalogs: Map<string, PlaylistCatalog>
 ): MarqueeItem[] {
   const out: MarqueeItem[] = []
+  const wanted = new Set(playlistIds)
   for (const favourite of getAllGlobalFavorites()) {
-    if (favourite.playlistId !== playlistId) continue
+    const playlistId = favourite.playlistId
+    if (!wanted.has(playlistId)) continue
     if (favourite.kind !== "vod" && favourite.kind !== "series") continue
     const kind: TitleKind = favourite.kind
-    const row = (kind === "vod" ? vodById : seriesById).get(Number(favourite.id))
+    const catalog = catalogs.get(playlistId)
+    const row = (kind === "vod" ? catalog?.vodById : catalog?.seriesById)?.get(Number(favourite.id))
     if (!row?.name) continue
     out.push({
-      key: `fav:${kind}:${favourite.id}`,
+      key: `fav:${kind}:${rowKey({ playlistId, id: favourite.id })}`,
       eyebrow: genreEyebrow(row),
       title: cleanTitle(row.name),
       meta: metaFor(row),
       rating: ratingFor(row),
       hasProgress: false,
-      detailHref: `/${kind === "vod" ? "movies" : "series"}/detail?id=${encodeURIComponent(String(favourite.id))}`,
-      ctaHref: `/${kind === "vod" ? "movies" : "series"}/detail?id=${encodeURIComponent(String(favourite.id))}`,
+      detailHref: detailHrefFor(kind, favourite.id, { playlistId }),
+      ctaHref: detailHrefFor(kind, favourite.id, { playlistId }),
       ctaLabel: t("hub.marquee.watch"),
       artUrl: row.logo || null,
       artKind: "poster",
       percent: 0,
-      ref: { kind, id: favourite.id },
+      ref: { kind, id: favourite.id, playlistId },
     })
   }
   return out
 }
 
-function recentlyAddedItems(vod: CatalogRow[]): MarqueeItem[] {
+function recentlyAddedItems(playlistId: string, vod: CatalogRow[]): MarqueeItem[] {
   return vod
     .filter((row) => row?.name && row?.logo)
     .slice(0, 4)
     .map((row) => ({
-      key: `new:${row.id}`,
+      key: `new:${rowKey({ playlistId, id: row.id! })}`,
       eyebrow: t("hub.marquee.new"),
       title: cleanTitle(row.name!),
       meta: metaFor(row),
       rating: ratingFor(row),
       hasProgress: false,
-      detailHref: `/movies/detail?id=${encodeURIComponent(String(row.id))}`,
-      ctaHref: `/movies/detail?id=${encodeURIComponent(String(row.id))}`,
+      detailHref: detailHrefFor("vod", row.id!, { playlistId }),
+      ctaHref: detailHrefFor("vod", row.id!, { playlistId }),
       ctaLabel: t("hub.marquee.watch"),
       artUrl: row.logo || null,
       artKind: "poster" as const,
       percent: 0,
-      ref: { kind: "vod" as TitleKind, id: row.id! },
+      ref: { kind: "vod" as TitleKind, id: row.id!, playlistId },
     }))
 }
 
@@ -244,19 +258,26 @@ function shuffle<T>(items: T[]): T[] {
  * favourites and new arrivals - so the band opens on what you were watching but
  * doesn't show the same second title every visit.
  */
-export async function buildMarqueePool(playlistId: string): Promise<MarqueeItem[]> {
+export async function buildMarqueePool(
+  playlistIds: string[],
+  activePlaylistId: string = playlistIds[0]
+): Promise<MarqueeItem[]> {
   await ensurePrefsLoaded()
-  const vod = (getCached(playlistId, "vod")?.data || []) as CatalogRow[]
-  const series = (getCached(playlistId, "series")?.data || []) as CatalogRow[]
-  const vodById = indexById(vod)
-  const seriesById = indexById(series)
+  const catalogs = new Map<string, PlaylistCatalog>()
+  for (const playlistId of playlistIds) {
+    const vod = (getCached(playlistId, "vod")?.data || []) as CatalogRow[]
+    const series = (getCached(playlistId, "series")?.data || []) as CatalogRow[]
+    catalogs.set(playlistId, { vod, vodById: indexById(vod), seriesById: indexById(series) })
+  }
 
-  const live = lastLiveItem(playlistId)
-  const lead = continueWatchingItems(playlistId, vodById, seriesById)
+  const live = activePlaylistId ? lastLiveItem(activePlaylistId) : null
+  const lead = continueWatchingItems(playlistIds, catalogs)
   const tail = shuffle([
     ...(live ? [live] : []),
-    ...favouriteItems(playlistId, vodById, seriesById),
-    ...recentlyAddedItems(vod),
+    ...favouriteItems(playlistIds, catalogs),
+    ...playlistIds.flatMap((playlistId) =>
+      recentlyAddedItems(playlistId, catalogs.get(playlistId)?.vod ?? [])
+    ),
   ])
 
   const seen = new Set<string>()
@@ -274,34 +295,28 @@ export async function buildMarqueePool(playlistId: string): Promise<MarqueeItem[
 
 const backdropByKey = new Map<string, string | null>()
 
-function refKey(playlistId: string, ref: { kind: TitleKind; id: string | number }): string {
-  return `${playlistId}:${ref.kind}:${ref.id}`
+function refKey(ref: MarqueeRef): string {
+  return `${ref.playlistId}:${ref.kind}:${ref.id}`
 }
 
-function cachedProviderBackdrop(
-  playlistId: string,
-  ref: { kind: TitleKind; id: string | number }
-): string | null {
+function cachedProviderBackdrop(ref: MarqueeRef): string | null {
   const hit = getCached(
-    playlistId,
+    ref.playlistId,
     ref.kind === "vod" ? `vod_info_${ref.id}` : `series_info_${ref.id}`
   )
   return hit ? backdropFromInfoPayload(hit.data) : null
 }
 
 /** Best artwork available now; the lazy lookups call `onResolved` when something better lands. */
-function resolveArtwork(
-  playlistId: string,
-  item: MarqueeItem,
-  onResolved: (key: string) => void
-): string | null {
+function resolveArtwork(item: MarqueeItem, onResolved: (key: string) => void): string | null {
   if (!item.ref) return item.artUrl
-  const key = refKey(playlistId, item.ref)
+  const { playlistId } = item.ref
+  const key = refKey(item.ref)
 
   const known = backdropByKey.get(key)
   if (known) return known
 
-  const provider = cachedProviderBackdrop(playlistId, item.ref)
+  const provider = cachedProviderBackdrop(item.ref)
   if (provider) {
     backdropByKey.set(key, provider)
     return provider
@@ -380,7 +395,6 @@ export function showMarqueeSkeleton(section: HTMLElement): void {
 
 export function mountMarquee(
   section: HTMLElement,
-  playlistId: string,
   pool: MarqueeItem[]
 ): MarqueeHandle | null {
   delete section.dataset.loading
@@ -435,7 +449,7 @@ export function mountMarquee(
     cta.setAttribute("aria-label", `${item.ctaLabel}: ${item.title}`)
     query("cta-label").textContent = item.ctaLabel
 
-    const artworkUrl = resolveArtwork(playlistId, item, (key) => {
+    const artworkUrl = resolveArtwork(item, (key) => {
       if (pool[index]?.key === key) show(pool[index])
     })
     if (!artworkUrl) {

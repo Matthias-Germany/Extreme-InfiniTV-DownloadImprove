@@ -2057,3 +2057,57 @@ export function mergePrefsSnapshots(current, incoming, allowedIds) {
   }
   return merged
 }
+
+/**
+ * @param {string[]} playlistIds
+ * @param {number} [limit]
+ */
+export function getMergedContinueWatching(playlistIds, limit = 6) {
+  const out = []
+  for (const playlistId of playlistIds) {
+    for (const row of getContinueWatching(playlistId, Number.MAX_SAFE_INTEGER)) {
+      out.push({ ...row, playlistId })
+    }
+  }
+  out.sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0))
+  return out.slice(0, Math.max(0, limit))
+}
+
+/**
+ * @param {string[]} playlistIds @param {"live"|"vod"|"series"} kind
+ * @returns {Array<{playlistId: string, id: number|string}>}
+ */
+export function getMergedFavoritesOrdered(playlistIds, kind) {
+  const out = []
+  for (const playlistId of playlistIds) {
+    for (const id of getFavoritesOrdered(playlistId, kind)) out.push({ playlistId, id })
+  }
+  return out
+}
+
+/**
+ * @param {string[]} playlistIds @param {"live"|"vod"} kind
+ */
+export function getMergedRecents(playlistIds, kind) {
+  const out = []
+  for (const playlistId of playlistIds) {
+    for (const recent of getRecents(playlistId, kind)) out.push({ ...recent, playlistId })
+  }
+  out.sort((a, b) => (b.ts || 0) - (a.ts || 0))
+  return out
+}
+
+/**
+ * @param {string[]} playlistIds
+ * @param {number} [limit]
+ */
+export function getMergedWatchedSignals(playlistIds, limit = 20) {
+  const out = []
+  for (const playlistId of playlistIds) {
+    for (const signal of getWatchedSignals(playlistId, Number.MAX_SAFE_INTEGER)) {
+      out.push({ ...signal, playlistId })
+    }
+  }
+  out.sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0))
+  return out.slice(0, Math.max(0, limit))
+}

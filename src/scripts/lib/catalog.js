@@ -7,12 +7,14 @@ import {
   invalidateCustomDependents,
 } from "@/scripts/lib/cache.js"
 import {
-  loadCreds,
   isLikelyM3USource,
   isLocalM3UHost,
   isCustomHost,
   readLocalM3UContent,
   getEntries,
+  getEntryById,
+  getActiveEntry,
+  getMergedEntries,
   entryToCreds,
   isTauri,
   getEntryDnsOverride,
@@ -284,8 +286,8 @@ export async function ensureLive(creds, playlistId, opts = {}) {
 // ---------------------------------------------------------------------------
 // VOD
 // ---------------------------------------------------------------------------
-async function fetchVodCategoryMap(dns) {
-  const r = await xtreamApiFetch("get_vod_categories", {}, { dns })
+async function fetchVodCategoryMap(playlistId, dns) {
+  const r = await xtreamApiFetch("get_vod_categories", {}, { entryId: playlistId, dns })
   if (!r.ok) throw new HttpRetryError(r.status, `vod_categories ${r.status}`)
   const data = await r.json().catch((err) => {
     log.warn("[xt:catalog] vod categories parse failed:", err?.message || err)
@@ -310,9 +312,9 @@ export async function ensureVod(creds, playlistId, opts = {}) {
   const onBytes = makeBytesEmitter(playlistId, "vod")
   let vodCategoryCount = null
   const fetcher = () => retryWithBackoff(async () => {
-    const catMap = await fetchVodCategoryMap(dns)
+    const catMap = await fetchVodCategoryMap(playlistId, dns)
     vodCategoryCount = catMap.size
-    const r = await xtreamApiFetch("get_vod_streams", {}, { dns })
+    const r = await xtreamApiFetch("get_vod_streams", {}, { entryId: playlistId, dns })
     const bytes = await streamingBytes(r, onBytes)
     if (!r.ok) throw new HttpRetryError(r.status, `vod_streams ${r.status}`)
     return ingestXtreamBytes("vod", bytes, Array.from(catMap), t("stream.uncategorized") || "Uncategorized")
@@ -329,8 +331,8 @@ export async function ensureVod(creds, playlistId, opts = {}) {
 // ---------------------------------------------------------------------------
 // Series
 // ---------------------------------------------------------------------------
-async function fetchSeriesCategoryMap(dns) {
-  const r = await xtreamApiFetch("get_series_categories", {}, { dns })
+async function fetchSeriesCategoryMap(playlistId, dns) {
+  const r = await xtreamApiFetch("get_series_categories", {}, { entryId: playlistId, dns })
   if (!r.ok) throw new HttpRetryError(r.status, `series_categories ${r.status}`)
   const data = await r.json().catch((err) => {
     log.warn("[xt:catalog] series categories parse failed:", err?.message || err)
@@ -355,9 +357,9 @@ export async function ensureSeries(creds, playlistId, opts = {}) {
   const onBytes = makeBytesEmitter(playlistId, "series")
   let seriesCategoryCount = null
   const fetcher = () => retryWithBackoff(async () => {
-    const catMap = await fetchSeriesCategoryMap(dns)
+    const catMap = await fetchSeriesCategoryMap(playlistId, dns)
     seriesCategoryCount = catMap.size
-    const r = await xtreamApiFetch("get_series", {}, { dns })
+    const r = await xtreamApiFetch("get_series", {}, { entryId: playlistId, dns })
     const bytes = await streamingBytes(r, onBytes)
     if (!r.ok) throw new HttpRetryError(r.status, `series ${r.status}`)
     return ingestXtreamBytes("series", bytes, Array.from(catMap), t("stream.uncategorized") || "Uncategorized")
@@ -377,18 +379,15 @@ export async function warmupActive(playlistId, opts = {}) {
   let creds
   let pid = playlistId
   try {
-    creds = await loadCreds()
+    if (!pid) pid = (await getActiveEntry())?._id
+    const entry = pid ? await getEntryById(pid) : null
+    creds = entry ? entryToCreds(entry) : null
   } catch (err) {
     log.warn("[xt:catalog] warmup loadCreds failed:", err?.message || err)
     return { live: [], vod: [], series: [], errors: { creds: "no creds" } }
   }
   if (!creds?.host) {
     return { live: [], vod: [], series: [], errors: { creds: "no creds" } }
-  }
-  if (!pid) {
-    const { getActiveEntry } = await import("@/scripts/lib/creds.js")
-    const e = await getActiveEntry()
-    pid = e?._id
   }
   if (!pid) {
     return { live: [], vod: [], series: [], errors: { playlist: "no active" } }
@@ -489,6 +488,28 @@ export async function warmupActive(playlistId, opts = {}) {
   return run
 }
 
+export async function warmupMerged(opts = {}) {
+  const results = new Map()
+  try {
+    const entries = await getMergedEntries()
+    const activeId = (await getActiveEntry())?._id
+    const ordered = [
+      ...entries.filter((entry) => entry._id === activeId),
+      ...entries.filter((entry) => entry._id !== activeId),
+    ]
+    for (const entry of ordered) {
+      try {
+        results.set(entry._id, await warmupActive(entry._id, opts))
+      } catch (err) {
+        log.warn("[xt:catalog] merged warmup failed:", err?.message || err)
+      }
+    }
+  } catch (err) {
+    log.warn("[xt:catalog] merged warmup failed:", err?.message || err)
+  }
+  return results
+}
+
 export const CATALOG_WARMED_EVENT = EVT_WARMED
 export const CATALOG_WARMING_START_EVENT = EVT_WARMING_START
 export const CATALOG_WARMING_PROGRESS_EVENT = EVT_WARMING_PROGRESS
@@ -506,20 +527,16 @@ export async function retryWarmupKind(playlistId, kind) {
   const fetcher = ENSURE_BY_KIND[kind]
   if (!fetcher) return
   let creds
+  let pid = playlistId
   try {
-    creds = await loadCreds()
+    if (!pid) pid = (await getActiveEntry())?._id
+    const entry = pid ? await getEntryById(pid) : null
+    creds = entry ? entryToCreds(entry) : null
   } catch (err) {
     log.warn("[xt:catalog] retryWarmupKind loadCreds failed:", err?.message || err)
     return
   }
-  if (!creds?.host) return
-  let pid = playlistId
-  if (!pid) {
-    const { getActiveEntry } = await import("@/scripts/lib/creds.js")
-    const e = await getActiveEntry()
-    pid = e?._id
-  }
-  if (!pid) return
+  if (!creds?.host || !pid) return
   if (isTauri) {
     try {
       const { retryKindNative } = await import("@/scripts/lib/warmup-native.ts")

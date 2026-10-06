@@ -10,7 +10,7 @@ import {
   getMaxConnectionsSync,
   getActivePlaylistIdSync,
 } from "@/scripts/lib/account-info.js"
-import { safeHttpUrl, getActiveDnsOverrideAsync } from "@/scripts/lib/creds.js"
+import { safeHttpUrl, getActiveDnsOverrideAsync, getPlaylistDnsOverride } from "@/scripts/lib/creds.js"
 import * as AFs from "@/scripts/lib/android-fs.js"
 import { notify } from "@/scripts/lib/notify"
 import { t } from "@/scripts/lib/i18n.js"
@@ -51,6 +51,22 @@ function maxConcurrent() {
 
 /** @type {string[]} ids waiting for an active slot */
 const queuedIds = []
+
+function downloadPlaylistId(item) {
+  return item?.source?.playlistId ?? getActivePlaylistIdSync()
+}
+
+function canStartFor(item) {
+  if (activeAborts.size >= getDownloadConcurrency()) return false
+  const playlistId = downloadPlaylistId(item)
+  const cap = getMaxConnectionsSync(playlistId)
+  if (!(cap > 0)) return true
+  let running = 0
+  for (const runningId of activeAborts.keys()) {
+    if (downloadPlaylistId(getItem(runningId)) === playlistId) running++
+  }
+  return running < cap
+}
 
 function readState() {
   try {
@@ -412,7 +428,9 @@ function nativeUriString(path) {
 
 async function buildNativeStartPayload(item) {
   const { url, headers } = buildNativeHeaders(item.url)
-  const dnsOverride = await getActiveDnsOverrideAsync()
+  const dnsOverride = item.source?.playlistId
+    ? await getPlaylistDnsOverride(item.source.playlistId)
+    : await getActiveDnsOverrideAsync()
   return {
     id: item.id,
     url,
@@ -780,11 +798,18 @@ async function runDownload(id) {
 }
 
 function tryRunNext() {
-  while (activeAborts.size < maxConcurrent() && queuedIds.length > 0) {
-    const nextId = queuedIds.shift()
-    if (!nextId) continue
+  for (let index = 0; index < queuedIds.length; ) {
+    const nextId = queuedIds[index]
     const next = getItem(nextId)
-    if (!next || next.status !== "queued") continue
+    if (!next || next.status !== "queued") {
+      queuedIds.splice(index, 1)
+      continue
+    }
+    if (!canStartFor(next)) {
+      index++
+      continue
+    }
+    queuedIds.splice(index, 1)
     runDownload(nextId)
   }
 }
@@ -834,7 +859,7 @@ export async function startDownload({ url, title, ext, source, nfo }) {
   // Native owns the queue on Android: never track these ids in
   // activeAborts/queuedIds, and push queued regardless of concurrency.
   const useNativeService = !!nativeDownloadBridge()
-  const willRun = !useNativeService && activeAborts.size < maxConcurrent()
+  const willRun = !useNativeService && canStartFor({ source })
   const item = {
     id,
     url,
@@ -889,7 +914,7 @@ export async function resumeDownload(id) {
   }
 
   updateItem(id, { userPaused: false })
-  if (activeAborts.size < maxConcurrent()) {
+  if (canStartFor(item)) {
     runDownload(id)
   } else {
     updateItem(id, { status: "queued", error: "" })
