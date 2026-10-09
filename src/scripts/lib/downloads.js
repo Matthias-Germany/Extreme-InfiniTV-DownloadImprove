@@ -27,8 +27,8 @@ const STORAGE_KEY = "xt_downloads"
 const EVT_PROGRESS = "xt:download-progress"
 const EVT_LIST = "xt:downloads-changed"
 
-const STALL_WINDOW_MS = 30_000
-const STALL_CHECK_MS = 5_000
+const STALL_WINDOW_MS = 180_000
+const STALL_CHECK_MS = 30_000
 
 function maxConcurrent() {
   const user = getDownloadConcurrency()
