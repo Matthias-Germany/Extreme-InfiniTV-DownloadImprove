@@ -1,6 +1,6 @@
 {
   "tag": "ffmpeg-sidecar-v2",
-  "pinnedAt": "2026-08-03",
+  "pinnedAt": "2026-10-09",
   "sidecarBuild": {
     "ffmpegVersion": "7.1.5",
     "builtAt": "2026-08-02T21:38:03Z",
