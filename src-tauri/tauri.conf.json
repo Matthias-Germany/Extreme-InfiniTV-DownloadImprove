@@ -48,7 +48,7 @@
     "publisher": "InfiniteL8p",
     "category": "public.app-category.video",
     "copyright": "© 2025 Ludovico Ferrara",
-    "createUpdaterArtifacts": true,
+    "createUpdaterArtifacts": false,
     "android": {
       "versionCode": 200009000
     },
